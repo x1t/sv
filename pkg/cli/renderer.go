@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/x1t/sv/pkg/supervisor"
 	"github.com/x1t/sv/pkg/utils"
@@ -27,9 +26,7 @@ func (cr *CLIRenderer) ShowStatus(client *supervisor.RPCClient) {
 	}
 
 	fmt.Printf("\n🔍 Supervisor进程状态 (共%d个进程)\n", len(processes))
-	fmt.Println(strings.Repeat("=", 80))
 	utils.DisplayStatus(processes)
-	fmt.Println(strings.Repeat("=", 80))
 	fmt.Println("\n💡 提示: 使用 'sv start/stop/restart <序号>' 来控制进程")
 	fmt.Println("🔧 配置: 设置SUPERVISOR_HOST环境变量来指定Supervisor地址")
 }

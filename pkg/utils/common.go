@@ -2,8 +2,13 @@ package utils
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
+
+	"github.com/olekukonko/tablewriter"
+	"github.com/olekukonko/tablewriter/renderer"
+	"github.com/olekukonko/tablewriter/tw"
 )
 
 // ProcessInfo 表示一个进程的信息
@@ -26,9 +31,26 @@ func DisplayStatus(processes []ProcessInfo) {
 		return
 	}
 
-	fmt.Printf("%-4s %-20s %-10s %-8s %-15s %s\n", "序号", "名称", "状态", "PID", "运行时间", "描述")
-	fmt.Println(strings.Repeat("-", 80))
+	// 创建使用Unicode圆角边框的表格
+	table := tablewriter.NewTable(os.Stdout,
+		tablewriter.WithRenderer(renderer.NewBlueprint(tw.Rendition{
+			Symbols: tw.NewSymbols(tw.StyleRounded), // 使用圆角Unicode边框
+		})),
+		tablewriter.WithConfig(tablewriter.Config{
+			Header: tw.CellConfig{
+				Alignment: tw.CellAlignment{Global: tw.AlignCenter},
+			},
+			Row: tw.CellConfig{
+				Alignment: tw.CellAlignment{Global: tw.AlignLeft}, // 默认左对齐
+			},
+		}),
+	)
 
+	// 设置表头
+	table.Header([]string{"序号", "名称", "状态", "PID", "运行时间", "描述"})
+
+	// 准备数据
+	var data [][]any
 	for _, proc := range processes {
 		statusColor := GetColorByState(proc.State)
 		pidStr := strconv.Itoa(proc.PID)
@@ -36,14 +58,23 @@ func DisplayStatus(processes []ProcessInfo) {
 			pidStr = "-"
 		}
 
-		fmt.Printf("%-4d %-20s %s%-10s%s %-8s %-15s %s\n",
+		// 为状态列添加颜色
+		stateColored := fmt.Sprintf("%s%s%s", statusColor, proc.StateName, "\x1b[0m")
+
+		row := []any{
 			proc.Index,
 			proc.Name,
-			statusColor, proc.StateName, "\x1b[0m",
+			stateColored,
 			pidStr,
 			proc.Uptime,
-			GetStateIcon(proc.State))
+			GetStateIcon(proc.State),
+		}
+		data = append(data, row)
 	}
+
+	// 批量添加数据并渲染
+	table.Bulk(data)
+	table.Render()
 }
 
 // GetColorByState 根据状态获取颜色
