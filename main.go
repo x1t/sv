@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -56,10 +57,11 @@ func handleServiceCommand(args []string) {
 	}
 
 	// 创建程序实例
-	svcProgram = &program{}
+	programInstance := &program{}
+	svcProgram = programInstance
 
 	// 创建服务实例
-	s, err := service.New(svcProgram, svcConfig)
+	s, err := service.New(programInstance, svcConfig)
 	if err != nil {
 		fmt.Printf("❌ 创建服务失败: %v\n", err)
 		return
@@ -218,17 +220,18 @@ func runServiceDaemon() {
 	// 创建服务配置
 	svcConfig := &service.Config{
 		Name:        "sv-supervisor-manager",
-		DisplayName: "SV Supervisor Manager", 
+		DisplayName: "SV Supervisor Manager",
 		Description: "现代化Supervisor进程管理工具",
 		Executable:  exePath,
 		Arguments:   []string{"daemon"},
 	}
 
 	// 创建程序实例
-	svcProgram = &program{}
+	programInstance := &program{}
+	svcProgram = programInstance
 
 	// 创建服务实例
-	s, err := service.New(svcProgram, svcConfig)
+	s, err := service.New(programInstance, svcConfig)
 	if err != nil {
 		logFatal("创建服务失败: %v", err)
 	}
@@ -259,14 +262,12 @@ func logFatal(format string, args ...interface{}) {
 
 // isLinux 检查是否为Linux系统
 func isLinux() bool {
-	return strings.Contains(strings.ToLower(os.Getenv("GOOS")), "linux") || 
-		   (os.PathSeparator == '/' && os.Getenv("WINDIR") == "")
+	return runtime.GOOS == "linux"
 }
 
-// isWindows 检查是否为Windows系统  
+// isWindows 检查是否为Windows系统
 func isWindows() bool {
-	return strings.Contains(strings.ToLower(os.Getenv("GOOS")), "windows") ||
-		   os.Getenv("WINDIR") != ""
+	return runtime.GOOS == "windows"
 }
 
 type Param struct {
@@ -370,7 +371,13 @@ func NewSupervisorClient(host, username, password string) *SupervisorClient {
 		host:     host,
 		username: username,
 		password: password,
-		client:   &http.Client{Timeout: 10 * time.Second},
+		client: &http.Client{
+			Timeout: 10 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				// 禁止HTTP重定向以防止SSRF攻击
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 }
 
@@ -445,7 +452,7 @@ func (sc *SupervisorClient) call(method string, params []interface{}) (interface
 	}
 
 	// 序列化为XML
-	xmlData, err := xml.MarshalIndent(call, "", "  ")
+	xmlData, err := xml.Marshal(call)
 	if err != nil {
 		return nil, fmt.Errorf("XML序列化失败: %v", err)
 	}
@@ -469,7 +476,13 @@ func (sc *SupervisorClient) call(method string, params []interface{}) (interface
 	if err != nil {
 		return nil, fmt.Errorf("请求失败: %v", err)
 	}
-	defer resp.Body.Close()
+
+	// 确保在所有路径下都关闭响应体
+	defer func() {
+		if resp != nil && resp.Body != nil {
+			resp.Body.Close()
+		}
+	}()
 
 	// 读取响应
 	body, err := io.ReadAll(resp.Body)
@@ -483,7 +496,7 @@ func (sc *SupervisorClient) call(method string, params []interface{}) (interface
 
 	// 为了正确解析响应，我们需要使用EnhancedValue结构
 	// 重新定义MethodResponse使用EnhancedValue
-	enhanedResponse := struct {
+	response := struct {
 		XMLName xml.Name      `xml:"methodResponse"`
 		Params  []struct {
 			Value EnhancedValue `xml:"param>value"`
@@ -500,13 +513,13 @@ func (sc *SupervisorClient) call(method string, params []interface{}) (interface
 		} `xml:"fault"`
 	}{}
 
-	if err := xml.Unmarshal(body, &enhanedResponse); err != nil {
+	if err := xml.Unmarshal(body, &response); err != nil {
 		return nil, fmt.Errorf("XML解析失败: %v", err)
 	}
 
 	// 检查错误
-	if enhanedResponse.Fault != nil {
-		for _, member := range enhanedResponse.Fault.Value.Struct.Member {
+	if response.Fault != nil {
+		for _, member := range response.Fault.Value.Struct.Member {
 			if member.Name == "faultString" {
 				return nil, fmt.Errorf("XML-RPC错误: %s", member.Value.String)
 			}
@@ -514,12 +527,12 @@ func (sc *SupervisorClient) call(method string, params []interface{}) (interface
 		return nil, fmt.Errorf("未知XML-RPC错误")
 	}
 
-	if len(enhanedResponse.Params) == 0 {
+	if len(response.Params) == 0 {
 		return nil, nil
 	}
 
 	// 解析并返回数据
-	return parseEnhancedValue(enhanedResponse.Params[0].Value), nil
+	return parseEnhancedValue(response.Params[0].Value), nil
 }
 
 // parseEnhancedValue 将EnhancedValue转换为Go类型
@@ -584,46 +597,50 @@ func (sc *SupervisorClient) GetAllProcesses() ([]ProcessInfo, error) {
 // parseProcessInfoFromMap 从map解析进程信息
 func parseProcessInfoFromMap(procMap map[string]interface{}, index int) ProcessInfo {
 	name := ""
-	if n, ok := procMap["name"]; ok {
+	if n, ok := procMap["name"]; ok && n != nil {
 		if s, ok := n.(string); ok {
 			name = s
 		}
 	}
 
 	group := ""
-	if g, ok := procMap["group"]; ok {
+	if g, ok := procMap["group"]; ok && g != nil {
 		if s, ok := g.(string); ok {
 			group = s
 		}
 	}
 
 	state := 0
-	if s, ok := procMap["state"]; ok {
+	if s, ok := procMap["state"]; ok && s != nil {
 		if f, ok := s.(float64); ok {
 			state = int(f)
 		} else if i, ok := s.(int); ok {
 			state = i
+		} else if i, ok := s.(float32); ok {
+			state = int(i)
 		}
 	}
 
 	stateName := ""
-	if sn, ok := procMap["statename"]; ok {
+	if sn, ok := procMap["statename"]; ok && sn != nil {
 		if s, ok := sn.(string); ok {
 			stateName = s
 		}
 	}
 
 	pid := 0
-	if p, ok := procMap["pid"]; ok {
+	if p, ok := procMap["pid"]; ok && p != nil {
 		if f, ok := p.(float64); ok {
 			pid = int(f)
 		} else if i, ok := p.(int); ok {
 			pid = i
+		} else if i, ok := p.(float32); ok {
+			pid = int(i)
 		}
 	}
 
 	description := ""
-	if d, ok := procMap["description"]; ok {
+	if d, ok := procMap["description"]; ok && d != nil {
 		if s, ok := d.(string); ok {
 			description = s
 		}
@@ -798,8 +815,8 @@ func (sc *SupervisorClient) getAllProcessesViaCommand() ([]ProcessInfo, error) {
 			fmt.Println("⚠️  获取到进程数据，但可能存在一些状态问题")
 			return parseSupervisorctlOutput(outputStr), nil
 		}
-		fmt.Printf("❌ supervisorctl 命令失败: %v\n", err)
-		return nil, fmt.Errorf("无法获取进程信息: supervisorctl 命令失败")
+		fmt.Printf("❌ supervisorctl 命令失败: %v, 输出: %s\n", err, string(output))
+		return nil, fmt.Errorf("无法获取进程信息: supervisorctl 命令失败: %v", err)
 	}
 
 	fmt.Println("✅ 成功获取真实进程数据")
@@ -867,20 +884,26 @@ func parseSupervisorctlOutput(output string) []ProcessInfo {
 		// 找到第一个非空格序列作为进程名
 		var name string
 		var rest string
-		for j, char := range lineCopy {
-			if char == ' ' {
-				name = strings.TrimSpace(lineCopy[:j])
-				rest = strings.TrimSpace(lineCopy[j+1:])
-				break
+		parts := strings.SplitN(lineCopy, " ", 2) // 只分割为两部分，确保进程名中的空格被保留
+		if len(parts) >= 1 {
+			name = strings.TrimSpace(parts[0])
+			if len(parts) > 1 {
+				rest = strings.TrimSpace(parts[1])
+			} else {
+				rest = ""
 			}
+		} else {
+			continue // 跳过无法解析的行
 		}
-		if name == "" {
-			name = lineCopy // 如果整行都是名称
+
+		// 检查行是否符合进程状态行的基本格式，避免解析无效行如 "invalid line without proper format"
+		if !isValidProcessLine(name, rest) {
+			continue // 跳过无效行
 		}
 
 		// 解析剩余部分
 		restFields := strings.Fields(rest)
-		if len(restFields) < 2 {
+		if len(restFields) < 1 {
 			continue
 		}
 
@@ -891,25 +914,61 @@ func parseSupervisorctlOutput(output string) []ProcessInfo {
 		// 解析PID和运行时间
 		for j, field := range restFields {
 			if field == "pid" && j+1 < len(restFields) {
-				pidStr := strings.TrimSuffix(restFields[j+1], ",")
+				// 保留原始的pid字段，不删除逗号，因为后续解析可能需要
+				pidStr := restFields[j+1]
+				if strings.HasSuffix(pidStr, ",") {
+					pidStr = strings.TrimSuffix(pidStr, ",")
+				}
 				if p, err := strconv.Atoi(pidStr); err == nil {
 					pid = p
 				}
 			}
 			if field == "uptime" && j+1 < len(restFields) {
-				// 组合uptime后面的所有字段
+				// 组合uptime后面的所有字段，保持原始格式
 				uptimeFields := restFields[j+1:]
-				for k, uptimeField := range uptimeFields {
-					if strings.HasSuffix(uptimeField, ",") {
-						uptimeFields[k] = strings.TrimSuffix(uptimeField, ",")
-					}
-				}
 				uptime = strings.Join(uptimeFields, " ")
 				break
 			}
 		}
 
 		state := getStateValue(stateName)
+
+		// 创建进程信息时，如果uptime为空且状态不是RUNNING，尝试使用rest的剩余部分
+		if uptime == "" && !strings.Contains(strings.ToUpper(stateName), "RUNNING") {
+			// 检查rest是否包含其他状态信息，如"Not started"
+			if len(restFields) > 1 {
+				// 重新构造从stateName开始的剩余部分
+				stateIdx := -1
+				for idx, field := range restFields {
+					if field == stateName && stateIdx == -1 {
+						stateIdx = idx
+						break
+					}
+				}
+				if stateIdx >= 0 && stateIdx+1 < len(restFields) {
+					extraInfo := restFields[stateIdx+1:]
+					if len(extraInfo) > 0 {
+						// 拼接额外信息，但要排除PID相关字段
+						var extraParts []string
+						skipNext := false
+						for _, part := range extraInfo {
+							if skipNext {
+								skipNext = false
+								continue
+							}
+							if part == "pid" {
+								skipNext = true // 跳过pid值
+								continue
+							}
+							extraParts = append(extraParts, part)
+						}
+						if len(extraParts) > 0 {
+							uptime = strings.Join(extraParts, " ")
+						}
+					}
+				}
+			}
+		}
 
 		processes = append(processes, ProcessInfo{
 			Index:       i + 1,
@@ -924,6 +983,32 @@ func parseSupervisorctlOutput(output string) []ProcessInfo {
 	}
 
 	return processes
+}
+
+// isValidProcessLine 检查行是否符合进程状态行的基本格式
+func isValidProcessLine(name string, rest string) bool {
+	// 检查进程名是否符合基本格式（包含字母数字下划线等）
+	if len(name) == 0 {
+		return false
+	}
+
+	// 检查剩余部分是否包含常见的状态值
+	restLower := strings.ToLower(rest)
+	commonStates := []string{"running", "stopped", "starting", "stopping", "fatal", "backoff"}
+
+	for _, state := range commonStates {
+		if strings.Contains(restLower, state) {
+			return true
+		}
+	}
+
+	// 如果没有找到常见的状态，但rest包含pid或uptime等关键词，也认为是有效的
+	if strings.Contains(restLower, "pid") || strings.Contains(restLower, "uptime") ||
+	   strings.Contains(restLower, "not started") || strings.Contains(restLower, "exited") {
+		return true
+	}
+
+	return false
 }
 
 // getStateValue 根据状态名称获取状态代码
@@ -980,6 +1065,22 @@ func (sc *SupervisorClient) ControlProcess(action, processName string) error {
 
 // controlProcessViaCommand 通过命令行方式控制进程（回退方案）
 func (sc *SupervisorClient) controlProcessViaCommand(action, processName string) error {
+	// 验证进程名称，防止命令注入
+	// 检查是否包含可能用于命令注入的特殊字符
+	if strings.ContainsAny(processName, "|;&`$()<>[]{}\\\"'") {
+		return fmt.Errorf("进程名称包含非法字符")
+	}
+
+	// 检查进程名是否只包含字母数字、冒号、下划线、连字符和点号（标准进程名格式）
+	// 避免包含可能导致shell解释的字符
+	for _, r := range processName {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
+			 r == ':' || r == '_' || r == '-' || r == '.') {
+			// 如果包含非标准字符，可能是恶意输入
+			return fmt.Errorf("进程名称包含非法字符")
+		}
+	}
+
 	var command string
 	switch action {
 	case "start":
@@ -998,11 +1099,11 @@ func (sc *SupervisorClient) controlProcessViaCommand(action, processName string)
 		return fmt.Errorf("不支持的操作: %s", action)
 	}
 
-	// 使用 supervisorctl 命令控制进程
+	// 使用 supervisorctl 命令控制进程，使用参数化方式避免命令注入
 	cmd := exec.Command("supervisorctl", command, processName)
-	output, err := cmd.Output()
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("%s进程失败: %v", action, err)
+		return fmt.Errorf("%s进程失败: %v, 输出: %s", action, err, string(output))
 	}
 
 	// 检查输出是否成功
@@ -1143,6 +1244,12 @@ func ParseProcessIndices(args []string, processes []ProcessInfo) ([]string, erro
 				continue
 			}
 
+			// 添加边界检查以避免索引越界
+			if index-1 >= len(processes) {
+				invalidIndices = append(invalidIndices, index)
+				continue
+			}
+
 			names = append(names, processes[index-1].Name)
 		}
 	}
@@ -1261,11 +1368,13 @@ func restartSupervisor() error {
 	// 尝试使用systemctl重启supervisor (在大多数Linux系统上)
 	cmd := exec.Command("systemctl", "restart", "supervisor")
 	if err := cmd.Run(); err != nil {
+		fmt.Printf("systemctl restart supervisor 失败: %v\n", err)
 		// 如果systemctl失败，尝试使用service命令
 		cmd = exec.Command("service", "supervisor", "restart")
 		if err := cmd.Run(); err != nil {
-			// 如果还是失败，尝试直接kill supervisord进程，让系统服务管理器重启它
-			return err
+			fmt.Printf("service restart supervisor 失败: %v\n", err)
+			// 如果还是失败，返回错误而不是继续尝试
+			return fmt.Errorf("无法重启supervisor服务: systemctl和service命令都失败了")
 		}
 	}
 	return nil
@@ -1343,12 +1452,29 @@ func hasRPCInterface(configPath string) (bool, error) {
 
 // addInetHTTPServerConfig 添加inet_http_server配置
 func addInetHTTPServerConfig(configPath string) error {
+	// 先检查配置文件权限
+	info, err := os.Stat(configPath)
+	if err != nil {
+		return err
+	}
+
+	// 检查是否可写
+	if info.Mode()&0200 == 0 { // 检查用户是否可写
+		return fmt.Errorf("配置文件不可写: %s", configPath)
+	}
+
+	// 读取现有内容
 	content, err := os.ReadFile(configPath)
 	if err != nil {
 		return err
 	}
 
 	contentStr := string(content)
+
+	// 检查是否已经存在inet_http_server配置
+	if strings.Contains(contentStr, "[inet_http_server]") {
+		return nil // 已存在，无需添加
+	}
 
 	// 添加inet_http_server配置
 	inetConfig := `
@@ -1365,23 +1491,40 @@ port=127.0.0.1:9001
 		if nextSectionPos != -1 {
 			nextSectionPos += unixPos + 1
 			newContent := contentStr[:nextSectionPos] + inetConfig + contentStr[nextSectionPos:]
-			return os.WriteFile(configPath, []byte(newContent), 0644)
+			return os.WriteFile(configPath, []byte(newContent), info.Mode())
 		}
 	}
 
 	// 如果没找到unix_http_server或位置不明确，则添加到文件开头
 	newContent := inetConfig + contentStr
-	return os.WriteFile(configPath, []byte(newContent), 0644)
+	return os.WriteFile(configPath, []byte(newContent), info.Mode())
 }
 
 // addRPCInterfaceConfig 添加RPC接口配置
 func addRPCInterfaceConfig(configPath string) error {
+	// 先检查配置文件权限
+	info, err := os.Stat(configPath)
+	if err != nil {
+		return err
+	}
+
+	// 检查是否可写
+	if info.Mode()&0200 == 0 { // 检查用户是否可写
+		return fmt.Errorf("配置文件不可写: %s", configPath)
+	}
+
+	// 读取现有内容
 	content, err := os.ReadFile(configPath)
 	if err != nil {
 		return err
 	}
 
 	contentStr := string(content)
+
+	// 检查是否已经存在RPC接口配置
+	if strings.Contains(contentStr, "[rpcinterface:supervisor]") {
+		return nil // 已存在，无需添加
+	}
 
 	// 添加RPC接口配置
 	rpcConfig := `
@@ -1394,12 +1537,12 @@ supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
 	supervisorctlPos := strings.Index(contentStr, "[supervisorctl]")
 	if supervisorctlPos != -1 {
 		newContent := contentStr[:supervisorctlPos] + rpcConfig + contentStr[supervisorctlPos:]
-		return os.WriteFile(configPath, []byte(newContent), 0644)
+		return os.WriteFile(configPath, []byte(newContent), info.Mode())
 	}
 
 	// 如果没找到supervisorctl位置，则添加到文件末尾
 	newContent := contentStr + rpcConfig
-	return os.WriteFile(configPath, []byte(newContent), 0644)
+	return os.WriteFile(configPath, []byte(newContent), info.Mode())
 }
 
 // run 程序运行逻辑，提取出来便于测试
