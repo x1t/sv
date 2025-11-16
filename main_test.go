@@ -36,8 +36,8 @@ func (suite *MainTestSuite) TestMain_Help() {
 			r, w, _ := os.Pipe()
 			os.Stdout = w
 
-			// 调用主函数
-			main()
+			// 调用运行函数而不是main函数以避免os.Exit
+			run()
 
 			// 恢复标准输出并读取捕获的内容
 			w.Close()
@@ -73,8 +73,8 @@ func (suite *MainTestSuite) TestMain_UnknownCommand() {
 	os.Stdout = wOut
 	os.Stderr = wErr
 
-	// 调用主函数
-	main()
+	// 调用运行函数
+	run()
 
 	// 恢复输出
 	wOut.Close()
@@ -104,8 +104,8 @@ func (suite *MainTestSuite) TestMain_NoArguments() {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	// 调用主函数
-	main()
+	// 调用运行函数
+	run()
 
 	// 恢复标准输出并读取捕获的内容
 	w.Close()
@@ -274,8 +274,8 @@ func (suite *MainTestSuite) TestCommandExecution() {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	// 调用主函数
-	main()
+	// 调用运行函数
+	run()
 
 	// 恢复标准输出并读取捕获的内容
 	w.Close()
