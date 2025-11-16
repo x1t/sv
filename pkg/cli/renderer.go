@@ -5,8 +5,8 @@ import (
 	"os"
 	"strings"
 
-	"sv/pkg/supervisor"
-	"sv/pkg/utils"
+	"github.com/x1t/sv/pkg/supervisor"
+	"github.com/x1t/sv/pkg/utils"
 )
 
 // CLIRenderer 负责命令行界面的渲染和交互

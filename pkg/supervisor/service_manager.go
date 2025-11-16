@@ -3,6 +3,7 @@ package supervisor
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 
 	"github.com/kardianos/service"
@@ -50,6 +51,112 @@ var (
 	svcService service.Service
 	svcProgram *program
 )
+
+// createSymlink 创建到 /usr/local/bin 的符号链接
+func (sm *ServiceManager) createSymlink() error {
+	// 获取当前可执行文件路径
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("获取可执行文件路径失败: %v", err)
+	}
+
+	// 获取文件状态，确认是普通文件
+	fileInfo, err := os.Stat(exePath)
+	if err != nil {
+		return fmt.Errorf("获取可执行文件状态失败: %v", err)
+	}
+	if fileInfo.IsDir() {
+		return fmt.Errorf("可执行文件路径指向目录: %s", exePath)
+	}
+
+	// 目标符号链接路径
+	targetPath := "/usr/local/bin/sv"
+
+	// 检查是否有权限写入目标目录
+	binDir := filepath.Dir(targetPath)
+	// 尝试创建一个临时文件来检查写权限
+	testFile := filepath.Join(binDir, ".sv_permissions_test")
+	if err := os.WriteFile(testFile, []byte(""), 0644); err != nil {
+		// 如果无法写入，可能是没有权限，需要以sudo运行
+		if os.IsPermission(err) {
+			return fmt.Errorf("没有权限写入 %s 目录，请以sudo身份运行: %v", binDir, err)
+		}
+		// 如果目录不存在，则需要创建
+		if os.IsNotExist(err) {
+			// 检查父目录权限
+			parentDir := filepath.Dir(binDir)
+			testParentFile := filepath.Join(parentDir, ".sv_permissions_test")
+			if err := os.WriteFile(testParentFile, []byte(""), 0644); err != nil {
+				if os.IsPermission(err) {
+					return fmt.Errorf("没有权限写入 %s 目录，请以sudo身份运行", parentDir)
+				}
+			} else {
+				// 清理测试文件
+				os.Remove(testParentFile)
+			}
+		}
+	} else {
+		// 清理测试文件
+		os.Remove(testFile)
+	}
+
+	// 检查目标路径是否已存在
+	if _, err := os.Lstat(targetPath); err == nil {
+		// 检查是否已经是符号链接并指向当前可执行文件
+		if linkDest, linkErr := os.Readlink(targetPath); linkErr == nil {
+			if linkDest == exePath {
+				// 已存在且指向正确的路径，无需操作
+				return nil
+			} else {
+				// 存在但指向不同路径，先删除
+				if removeErr := os.Remove(targetPath); removeErr != nil {
+					return fmt.Errorf("删除现有符号链接失败: %v", removeErr)
+				}
+			}
+		} else {
+			// 是普通文件而不是符号链接，需要删除
+			if removeErr := os.Remove(targetPath); removeErr != nil {
+				return fmt.Errorf("删除现有文件失败: %v", removeErr)
+			}
+		}
+	}
+
+	// 创建 /usr/local/bin 目录（如果不存在）
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		return fmt.Errorf("创建目录失败: %v", err)
+	}
+
+	// 创建符号链接
+	if err := os.Symlink(exePath, targetPath); err != nil {
+		// 如果权限错误，提示用户以sudo运行
+		if os.IsPermission(err) {
+			return fmt.Errorf("创建符号链接失败，请以sudo身份运行: %v", err)
+		}
+		return fmt.Errorf("创建符号链接失败: %v", err)
+	}
+
+	fmt.Printf("✅ 已创建符号链接: %s -> %s\n", targetPath, exePath)
+	return nil
+}
+
+// removeSymlink 删除到 /usr/local/bin 的符号链接
+func (sm *ServiceManager) removeSymlink() error {
+	targetPath := "/usr/local/bin/sv"
+
+	// 检查目标路径是否存在
+	if _, err := os.Lstat(targetPath); os.IsNotExist(err) {
+		// 符号链接不存在，无需操作
+		return nil
+	}
+
+	// 删除符号链接
+	if err := os.Remove(targetPath); err != nil {
+		return fmt.Errorf("删除符号链接失败: %v", err)
+	}
+
+	fmt.Printf("✅ 已删除符号链接: %s\n", targetPath)
+	return nil
+}
 
 // NewServiceManager 创建新的服务管理器
 func NewServiceManager() *ServiceManager {
@@ -138,6 +245,16 @@ func (sm *ServiceManager) InstallService() {
 		return
 	}
 
+	// 为Unix/Linux系统创建符号链接到/usr/local/bin
+	if runtime.GOOS != "windows" {
+		fmt.Println("🔗 正在创建符号链接...")
+		if err := sm.createSymlink(); err != nil {
+			// 如果符号链接创建失败，输出警告但不中断服务安装
+			fmt.Printf("⚠️  创建符号链接失败: %v\n", err)
+			fmt.Println("💡 提示: 如需将命令添加到PATH，可手动执行: sudo ln -s $(which sv) /usr/local/bin/sv")
+		}
+	}
+
 	fmt.Println("✅ SV系统服务安装成功!")
 	fmt.Println()
 	fmt.Println("💡 使用以下命令管理服务:")
@@ -165,6 +282,15 @@ func (sm *ServiceManager) UninstallService() {
 	if err != nil {
 		fmt.Printf("❌ 卸载失败: %v\n", err)
 		return
+	}
+
+	// 为Unix/Linux系统移除符号链接
+	if runtime.GOOS != "windows" {
+		fmt.Println("🔗 正在移除符号链接...")
+		if err := sm.removeSymlink(); err != nil {
+			// 如果符号链接移除失败，输出警告但不中断服务卸载
+			fmt.Printf("⚠️  移除符号链接失败: %v\n", err)
+		}
 	}
 
 	fmt.Println("✅ SV系统服务卸载成功!")

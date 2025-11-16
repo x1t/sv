@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"sv/pkg/supervisor"
+	"github.com/x1t/sv/pkg/supervisor"
 )
 
 // CLIApp 负责整个CLI应用的运行逻辑

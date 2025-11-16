@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"sv/pkg/utils"
+	"github.com/x1t/sv/pkg/utils"
 	"github.com/stretchr/testify/assert"
 )
 

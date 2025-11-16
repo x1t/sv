@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"sv/pkg/cli"
+	"github.com/x1t/sv/pkg/cli"
 )
 
 

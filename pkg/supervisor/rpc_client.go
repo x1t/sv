@@ -9,7 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
-	"sv/pkg/utils"
+	"github.com/x1t/sv/pkg/utils"
 )
 
 // RPCClient Supervisor RPC客户端
