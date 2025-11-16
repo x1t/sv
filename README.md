@@ -2,17 +2,17 @@
 
 一个基于Go语言开发的现代化Supervisor进程管理工具，采用模块化架构设计，支持序号操作、智能配置检测和系统服务管理，让进程管理更加便捷！
 
-## ✨ 特性
+## ✨ 核心特性
 
-- 🎯 **序号操作** - 使用数字序号代替长进程名，操作更快速
-- 📊 **美观显示** - 彩色状态显示，运行时间格式化，完美对齐
-- 🔧 **灵活控制** - 支持单个、多个、范围操作
-- 🌐 **远程管理** - 支持认证远程Supervisor服务器
-- 🛠️ **智能配置** - 自动检测和配置Supervisor RPC功能
-- 🔧 **系统服务** - 支持将工具自身安装为系统服务
-- 💡 **智能提示** - 友好的错误提示和使用说明
-- 🎨 **状态图标** - 直观的进程状态图标显示
-- 🔄 **双模式架构** - RPC优先，命令行模式自动回退
+- 🎯 **序号化操作** - 使用数字序号代替长进程名，提升运维效率
+- 📊 **美观表格显示** - Unicode直线边框，完美对齐，彩色状态+图标
+- 🔧 **灵活进程控制** - 支持单个、多个、范围、混合操作格式
+- 🌐 **远程服务器管理** - 支持认证远程Supervisor服务器
+- 🛠️ **智能配置检测** - 自动检测和配置Supervisor RPC功能
+- 🔧 **系统服务集成** - 支持将工具自身安装为系统服务，自动创建符号链接
+- 💡 **智能错误处理** - 友好的中文错误提示和解决建议
+- 🔄 **双模式架构** - RPC优先，命令行模式自动回退，确保兼容性
+- ⚡ **极致性能** - Go语言开发，单二进制文件，超快启动速度
 
 ## 🏗️ 项目架构
 
@@ -57,13 +57,13 @@ sv/
 
 ```bash
 # 克隆仓库
-git clone <repository-url>
+git clone https://github.com/x1t/sv.git
 cd sv
 
 # 安装依赖
 go mod tidy
 
-# 使用构建脚本（推荐）
+# 使用构建脚本（推荐，输出到dist目录）
 ./build.sh
 
 # 或者手动编译
@@ -96,6 +96,9 @@ GOOS=darwin GOARCH=amd64 go build -o sv-darwin-amd64 main.go
 
 # 混合使用各种格式
 ./sv restart 1 nginx 3-5
+
+# 安装为系统服务（自动创建符号链接）
+sudo ./sv service install
 ```
 
 ## 📋 命令参考
@@ -267,11 +270,14 @@ rpcinterface_files = supervisord
 # 快速查看所有服务状态
 ./sv status
 
-# 重启web服务
+# 重启web服务（序号1）
 ./sv restart 1
 
-# 重启所有数据库服务
+# 重启所有数据库服务（序号5-7）
 ./sv restart 5-7
+
+# 查看特定服务状态
+./sv status | grep nginx
 ```
 
 ### 批量操作
@@ -282,6 +288,12 @@ rpcinterface_files = supervisord
 
 # 启动所有核心服务
 ./sv start 1-4
+
+# 重启多个指定服务
+./sv restart 1 3 5-7 nginx
+
+# 停止所有服务（使用范围）
+./sv stop 1-20
 ```
 
 ### 问题排查
@@ -292,17 +304,43 @@ rpcinterface_files = supervisord
 
 # 重启问题服务
 ./sv restart 3
+
+# 查看服务详细信息
+./sv status
+```
+
+### 远程服务器管理
+
+```bash
+# 连接远程Supervisor服务器
+SUPERVISOR_HOST="http://192.168.1.100:9001/RPC2" ./sv status
+
+# 带认证的远程连接
+SUPERVISOR_HOST="http://remote-server:9001/RPC2" \
+SUPERVISOR_USER="admin" \
+SUPERVISOR_PASSWORD="secret123" \
+./sv restart 1-5
 ```
 
 ### 系统服务管理
 
 ```bash
 # 安装为系统服务，实现持久化运行
-./sv service install
+sudo ./sv service install
 
 # 启用开机自启动
-systemctl enable sv  # Linux
+sudo systemctl enable sv  # Linux
 # 或在Windows服务中设置为自动启动
+
+# 管理系统服务
+./sv service start
+./sv service status
+./sv service stop
+./sv service restart
+
+# 卸载系统服务
+sudo ./sv service uninstall
+```
 ```
 
 ## 🛠️ 开发
@@ -311,7 +349,7 @@ systemctl enable sv  # Linux
 
 ```bash
 # 克隆仓库
-git clone <repository-url>
+git clone https://github.com/x1t/sv.git
 cd sv
 
 # 安装依赖
@@ -320,7 +358,7 @@ go mod tidy
 # 开发运行
 go run main.go status
 
-# 运行测试
+# 运行所有测试
 go test -v
 
 # 按包运行测试
@@ -328,27 +366,44 @@ go test -v ./pkg/cli/
 go test -v ./pkg/supervisor/
 go test -v ./pkg/utils/
 
+# 运行特定测试函数
+go test -run TestMain_Help
+go test -run TestProcessControl
+go test -run TestConfigDetector
+
 # 生成覆盖率报告
 go test -coverprofile=coverage.out
 go tool cover -html=coverage.out -o coverage.html
 
 # 基准测试
 go test -bench=. -benchmem
+
+# 依赖管理
+go mod tidy      # 整理依赖
+go mod verify    # 验证依赖
+go mod graph     # 查看依赖图
 ```
 
 ### 编译选项
 
 ```bash
-# 开发环境
+# 开发环境运行
 go run main.go <command>
 
-# 生产编译
+# 生产编译（减小二进制文件大小）
 go build -ldflags="-s -w" -o sv main.go
+
+# 使用构建脚本（输出到dist目录）
+./build.sh
 
 # 交叉编译
 GOOS=linux GOARCH=amd64 go build -o sv-linux-amd64 main.go
 GOOS=windows GOARCH=amd64 go build -o sv-windows-amd64.exe main.go
 GOOS=darwin GOARCH=amd64 go build -o sv-darwin-amd64 main.go
+
+# 其他平台
+GOOS=freebsd GOARCH=amd64 go build -o sv-freebsd-amd64 main.go
+GOOS=openbsd GOARCH=amd64 go build -o sv-openbsd-amd64 main.go
 ```
 
 ### 依赖管理
@@ -464,7 +519,8 @@ journalctl -u sv -f  # Linux
 
 - [Supervisor官方文档](http://supervisord.org/)
 - [Go语言官网](https://golang.org/)
-- [问题反馈](https://github.com/your-repo/sv/issues)
+- [问题反馈](https://github.com/x1t/sv/issues)
+- [项目主页](https://github.com/x1t/sv)
 
 ## 📄 许可证
 

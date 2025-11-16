@@ -61,7 +61,7 @@ go run main.go restart 1
 # 生产构建
 go build -ldflags="-s -w" -o sv main.go
 
-# 使用构建脚本
+# 使用构建脚本（输出到dist目录）
 ./build.sh
 
 # 交叉编译
@@ -162,12 +162,19 @@ rpcinterface_files = supervisord
 ./sv restart 1 nginx 3-5 # 混合
 ```
 
+### 符号链接功能
+- 安装服务时自动创建 `/usr/local/bin/sv` 符号链接
+- 权限检测机制，自动处理权限不足情况
+- 卸载服务时自动移除符号链接
+- 跨平台兼容（仅Unix/Linux系统）
+
 ## 🎨 UI/UX 规范
 
 ### 状态显示系统
 - 使用`tablewriter`库实现美观表格显示
-- Unicode圆角边框，表头居中，数据左对齐
+- Unicode直线边框（与PM2保持一致），表头居中，数据左对齐
 - 彩色状态显示 + 直观图标系统
+- 支持中文字符宽度对齐（`WithTrimSpace(tw.Off)`配置）
 
 ### 状态编码规范
 - **RUNNING (20)**: 绿色 + ✅
