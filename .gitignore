@@ -27,6 +27,10 @@ vendor/
 # Go module cache
 go.sum
 
+# Downloaded Go modules (accidentally placed in project root)
+supervisor/
+tablewriter/
+
 # IDE and editor files
 .vscode/
 .idea/

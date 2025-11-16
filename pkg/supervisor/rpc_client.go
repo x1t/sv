@@ -275,11 +275,28 @@ func (rc *RPCClient) parseProcessInfoFromMap(procMap map[string]interface{}, ind
 		fullName = group + ":" + name
 	}
 
-	// 生成状态描述
+	// 生成状态描述 - 处理运行时间
 	var uptime string
 	if pid > 0 {
-		// 如果有PID，尝试从描述中提取运行时间
-		uptime = description
+		// 如果有PID，需要从描述中提取运行时间
+		// description 格式通常是 "pid 12345, uptime 4:46:03"
+		if strings.Contains(description, "uptime") {
+			// 提取 uptime 后面的时间部分
+			parts := strings.Split(description, "uptime")
+			if len(parts) > 1 {
+				timeStr := strings.TrimSpace(parts[1])
+				// 移除可能的逗号
+				if strings.HasSuffix(timeStr, ",") {
+					timeStr = strings.TrimSuffix(timeStr, ",")
+				}
+				// 使用 utils 包中的函数来格式化时间
+				uptime = utils.ProcessUptimeString(timeStr)
+			} else {
+				uptime = description
+			}
+		} else {
+			uptime = description
+		}
 	} else {
 		uptime = "已停止"
 	}

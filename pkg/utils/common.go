@@ -31,10 +31,11 @@ func DisplayStatus(processes []ProcessInfo) {
 		return
 	}
 
-	// 创建使用Unicode圆角边框的表格
+	// 创建使用Unicode直线边框的表格（与PM2一样的完美四边形边框）
+	// 使用 WithTrimSpace(tw.Off) 来正确处理中文字符宽度，避免对齐问题
 	table := tablewriter.NewTable(os.Stdout,
 		tablewriter.WithRenderer(renderer.NewBlueprint(tw.Rendition{
-			Symbols: tw.NewSymbols(tw.StyleRounded), // 使用圆角Unicode边框
+			Symbols: tw.NewSymbols(tw.StyleLight), // 使用直线Unicode边框（一致的┼分隔符）
 		})),
 		tablewriter.WithConfig(tablewriter.Config{
 			Header: tw.CellConfig{
@@ -44,30 +45,28 @@ func DisplayStatus(processes []ProcessInfo) {
 				Alignment: tw.CellAlignment{Global: tw.AlignLeft}, // 默认左对齐
 			},
 		}),
+		tablewriter.WithTrimSpace(tw.Off), // 关闭空格修剪，正确处理中文字符宽度
 	)
 
 	// 设置表头
-	table.Header([]string{"序号", "名称", "状态", "PID", "运行时间", "描述"})
+	table.Header([]string{"序号", "名称", "状态", "PID", "运行时间"})
 
 	// 准备数据
 	var data [][]any
 	for _, proc := range processes {
-		statusColor := GetColorByState(proc.State)
 		pidStr := strconv.Itoa(proc.PID)
 		if proc.PID == 0 {
 			pidStr = "-"
 		}
 
-		// 为状态列添加颜色
-		stateColored := fmt.Sprintf("%s%s%s", statusColor, proc.StateName, "\x1b[0m")
-
+		// 添加带颜色的状态
+		coloredStateName := fmt.Sprintf("%s%s%s", GetColorByState(proc.State), proc.StateName, "\x1b[0m")
 		row := []any{
 			proc.Index,
 			proc.Name,
-			stateColored,
+			coloredStateName, // 带颜色的状态
 			pidStr,
 			proc.Uptime,
-			GetStateIcon(proc.State),
 		}
 		data = append(data, row)
 	}
@@ -133,6 +132,74 @@ func GetStateValue(stateName string) int {
 	}
 }
 
+// ProcessUptimeString 处理运行时间字符串，只保留时间部分（公开版本）
+func ProcessUptimeString(uptime string) string {
+	return processUptimeString(uptime)
+}
+
+// processUptimeString 处理运行时间字符串，只保留时间部分
+func processUptimeString(uptime string) string {
+	// 提取 "X days, X:X:X" 或 "X:X:X" 格式的运行时间
+	// 例如：从 "30 days, 16:17:38" 中提取 "30天16小时17分钟38秒"
+	// 或者从 "1:59:48" 中提取 "1小时59分钟48秒"
+
+	// 检查是否包含 "days" 信息
+	if strings.Contains(uptime, "days") {
+		parts := strings.Split(uptime, "days")
+		if len(parts) >= 2 {
+			// 取逗号后的部分，即时间部分
+			timePart := strings.TrimSpace(parts[1])
+			if strings.HasPrefix(timePart, ",") {
+				timePart = strings.TrimSpace(timePart[1:])
+			}
+			// 解析 "HH:MM:SS" 格式
+			return parseTimeFormat(timePart)
+		}
+	}
+
+	// 直接解析 "HH:MM:SS" 或 "MM:SS" 格式
+	return parseTimeFormat(uptime)
+}
+
+// parseTimeFormat 解析时间格式
+func parseTimeFormat(timeStr string) string {
+	// 移除可能的额外描述信息，只保留 HH:MM:SS 格式
+	timeStr = strings.TrimSpace(timeStr)
+
+	// 只取第一个部分（时间部分）
+	parts := strings.Split(timeStr, " ")
+	timePart := parts[0]
+
+	// 按冒号分割
+	timeComponents := strings.Split(timePart, ":")
+
+	if len(timeComponents) == 3 {
+		// HH:MM:SS 格式
+		hours, err1 := strconv.Atoi(timeComponents[0])
+		mins, err2 := strconv.Atoi(timeComponents[1])
+		secs, err3 := strconv.Atoi(timeComponents[2])
+
+		if err1 == nil && err2 == nil && err3 == nil {
+			if hours > 0 {
+				return fmt.Sprintf("%d小时%02d分钟%02d秒", hours, mins, secs)
+			} else {
+				return fmt.Sprintf("%02d分钟%02d秒", mins, secs)
+			}
+		}
+	} else if len(timeComponents) == 2 {
+		// MM:SS 格式
+		mins, err1 := strconv.Atoi(timeComponents[0])
+		secs, err2 := strconv.Atoi(timeComponents[1])
+
+		if err1 == nil && err2 == nil {
+			return fmt.Sprintf("%02d分钟%02d秒", mins, secs)
+		}
+	}
+
+	// 如果解析失败，返回原始字符串
+	return timeStr
+}
+
 // GetStringValue 从interface{}获取string值
 func GetStringValue(v interface{}) string {
 	if s, ok := v.(string); ok {
@@ -158,15 +225,16 @@ func FormatUptime(seconds int) string {
 	days := seconds / 86400
 	hours := (seconds % 86400) / 3600
 	minutes := (seconds % 3600) / 60
+	secondsRemaining := seconds % 60
 
 	if days > 0 {
-		return fmt.Sprintf("%d天%d小时%d分", days, hours, minutes)
+		return fmt.Sprintf("%d天%d小时%02d分%02d秒", days, hours, minutes, secondsRemaining)
 	} else if hours > 0 {
-		return fmt.Sprintf("%d小时%d分", hours, minutes)
+		return fmt.Sprintf("%d小时%02d分%02d秒", hours, minutes, secondsRemaining)
 	} else if minutes > 0 {
-		return fmt.Sprintf("%d分钟", minutes)
+		return fmt.Sprintf("%02d分钟%02d秒", minutes, secondsRemaining)
 	} else {
-		return "不到1分钟"
+		return fmt.Sprintf("%02d秒", secondsRemaining)
 	}
 }
 
@@ -357,17 +425,28 @@ func ParseSupervisorctlOutput(output string) []ProcessInfo {
 				}
 			}
 			if field == "uptime" && j+1 < len(restFields) {
-				// 组合uptime后面的所有字段，保持原始格式
-				uptimeFields := restFields[j+1:]
-				uptime = strings.Join(uptimeFields, " ")
+				// 只取uptime后面的第一个字段（时间部分），避免包含其他信息
+				uptime = restFields[j+1]
+				// 移除可能的逗号
+				if strings.HasSuffix(uptime, ",") {
+					uptime = strings.TrimSuffix(uptime, ",")
+				}
+
+				// 进一步处理运行时间格式，只保留时间部分
+				processedUptime := processUptimeString(uptime)
+				// 确保解析后的结果不为空
+				if processedUptime != "" {
+					uptime = processedUptime
+				}
 				break
 			}
 		}
-
+		
 		state := GetStateValue(stateName)
 
 		// 创建进程信息时，如果uptime为空且状态不是RUNNING，尝试使用rest的剩余部分
-		if uptime == "" && !strings.Contains(strings.ToUpper(stateName), "RUNNING") {
+		// 创建进程信息时，如果uptime为空且状态不是RUNNING，尝试使用rest的剩余部分
+	if uptime == "" && !strings.Contains(strings.ToUpper(stateName), "RUNNING") {
 			// 检查rest是否包含其他状态信息，如"Not started"
 			if len(restFields) > 1 {
 				// 重新构造从stateName开始的剩余部分
@@ -417,3 +496,4 @@ func ParseSupervisorctlOutput(output string) []ProcessInfo {
 
 	return processes
 }
+
