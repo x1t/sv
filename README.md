@@ -5,13 +5,14 @@
 ## ✨ 特性
 
 - 🎯 **序号操作** - 使用数字序号代替长进程名，操作更快速
-- 📊 **美观显示** - 彩色状态显示，运行时间格式化
+- 📊 **美观显示** - 彩色状态显示，运行时间格式化，完美对齐
 - 🔧 **灵活控制** - 支持单个、多个、范围操作
 - 🌐 **远程管理** - 支持认证远程Supervisor服务器
 - 🛠️ **智能配置** - 自动检测和配置Supervisor RPC功能
 - 🔧 **系统服务** - 支持将工具自身安装为系统服务
 - 💡 **智能提示** - 友好的错误提示和使用说明
 - 🎨 **状态图标** - 直观的进程状态图标显示
+- 🔄 **双模式架构** - RPC优先，命令行模式自动回退
 
 ## 🏗️ 项目架构
 
@@ -19,7 +20,8 @@
 
 ```
 sv/
-├── main.go                    # 主程序入口（23行）
+├── main.go                    # 主程序入口（23行，极简设计）
+├── build.sh                   # 构建脚本
 ├── pkg/                       # 核心包目录
 │   ├── cli/                   # CLI应用层
 │   │   ├── app.go            # CLI应用逻辑
@@ -28,18 +30,21 @@ sv/
 │   │   ├── rpc_client.go     # XML-RPC客户端
 │   │   ├── config_detector.go # 配置检测器
 │   │   ├── service_manager.go # 系统服务管理
-│   │   └── process_control.go # 进程控制
+│   │   ├── process_control.go # 进程控制
+│   │   └── types.go          # 数据结构定义
 │   └── utils/                 # 工具函数
 │       └── common.go         # 通用工具函数
-└── tests/                     # 测试文件
+├── *.go                      # 测试文件（完整测试覆盖）
+├── go.mod                    # Go模块依赖（Go 1.23.0+）
+└── README.md                 # 项目文档
 ```
 
 ### 核心组件
 
-- **CLI应用层**: 负责命令解析和用户交互
-- **业务逻辑层**: Supervisor通信和进程管理
-- **工具函数层**: 通用工具和数据结构
-- **系统服务层**: 跨平台服务管理
+- **CLI应用层**: 负责命令解析、参数验证和用户交互
+- **业务逻辑层**: Supervisor通信、进程管理、配置检测
+- **工具函数层**: 通用工具、数据结构、显示格式化
+- **系统服务层**: 跨平台服务管理和守护进程
 
 ## 🚀 快速开始
 
@@ -58,8 +63,11 @@ cd sv
 # 安装依赖
 go mod tidy
 
-# 编译
-go build -o sv main.go
+# 使用构建脚本（推荐）
+./build.sh
+
+# 或者手动编译
+go build -ldflags="-s -w" -o sv main.go
 
 # 交叉编译
 GOOS=linux GOARCH=amd64 go build -o sv-linux-amd64 main.go
@@ -70,7 +78,7 @@ GOOS=darwin GOARCH=amd64 go build -o sv-darwin-amd64 main.go
 ### 基本使用
 
 ```bash
-# 查看所有进程状态（带序号）
+# 查看所有进程状态（带序号和完美表格显示）
 ./sv status
 ./sv list      # 同status
 
@@ -86,7 +94,7 @@ GOOS=darwin GOARCH=amd64 go build -o sv-darwin-amd64 main.go
 # 使用进程名操作（兼容传统方式）
 ./sv restart nginx redis
 
-# 混合使用
+# 混合使用各种格式
 ./sv restart 1 nginx 3-5
 ```
 
@@ -148,9 +156,9 @@ export SUPERVISOR_PASSWORD="your_password"
 SUPERVISOR_HOST="http://192.168.1.100:9001/RPC2" ./sv status
 
 # 带认证的配置
-SUPERVISOR_HOST="http://remote-server:9001/RPC2" \\
-SUPERVISOR_USER="admin" \\
-SUPERVISOR_PASSWORD="secret123" \\
+SUPERVISOR_HOST="http://remote-server:9001/RPC2" \
+SUPERVISOR_USER="admin" \
+SUPERVISOR_PASSWORD="secret123" \
 ./sv status
 ```
 
@@ -161,6 +169,23 @@ SUPERVISOR_PASSWORD="secret123" \\
 - **缺失配置**: 自动添加必要的RPC和HTTP服务器配置
 - **配置验证**: 验证配置正确性和可用性
 - **优雅降级**: 配置失败时自动回退到命令行模式
+
+### 必需的Supervisor配置
+
+确保`supervisord.conf`包含以下配置：
+
+```ini
+[inet_http_server]
+port=127.0.0.1:9001
+username=user
+password=pass
+
+[rpcinterface:supervisor]
+supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
+
+[supervisord]
+rpcinterface_files = supervisord
+```
 
 ## 🔧 系统服务管理
 
@@ -201,6 +226,38 @@ SUPERVISOR_PASSWORD="secret123" \\
 | 0 | STOPPED | 白色 | ⏸️ 已停止 |
 | 100 | FATAL | 红色 | ❌ 致命错误 |
 | 200 | BACKOFF | 黄色 | ⚠️ 重试中 |
+
+## 🌟 输出示例
+
+### 进程状态显示（最新版本）
+
+```
+🔍 Supervisor进程状态 (共5个进程)
+┌──────┬──────────────────────┬─────────┬─────────┬─────────────────┐
+│ 序号 │         名称         │  状态   │   PID   │    运行时间     │
+├──────┼──────────────────────┼─────────┼─────────┼─────────────────┤
+│ 1    │ agent:agent_00       │ RUNNING │ 3836860 │ 4小时50分钟06秒 │
+│ 2    │ hysteria:hysteria_00 │ RUNNING │ 3870703 │ 2小时07分钟33秒 │
+│ 3    │ iperf3:iperf3_00     │ RUNNING │ 3870876 │ 2小时07分钟18秒 │
+│ 4    │ ss:ss_00             │ RUNNING │ 3870884 │ 2小时07分钟17秒 │
+│ 5    │ xray8:xray8_00       │ RUNNING │ 3835299 │ 4小时56分钟50秒 │
+└──────┴──────────────────────┴─────────┴─────────┴─────────────────┘
+
+💡 提示: 使用 'sv start/stop/restart <序号>' 来控制进程
+🔧 配置: 设置SUPERVISOR_HOST环境变量来指定Supervisor地址
+```
+
+### 智能配置检测输出
+
+```
+🔧 检测Supervisor配置...
+✅ 找到配置文件: /etc/supervisor/supervisord.conf
+⚠️  缺少[inet_http_server]配置
+🛠️  正在添加RPC配置...
+✅ 配置更新成功
+🔄 正在重启Supervisor服务...
+✅ Supervisor服务重启成功
+```
 
 ## 🎯 使用场景
 
@@ -248,43 +305,7 @@ systemctl enable sv  # Linux
 # 或在Windows服务中设置为自动启动
 ```
 
-## 🌟 输出示例
-
-### 进程状态显示
-
-```
-🔍 Supervisor进程状态 (共4个进程)
-================================================================================
-序号   名称                   状态         PID      运行时间            描述
---------------------------------------------------------------------------------
-1    nginx                RUNNING    1234     2小时15分          ✅ 运行中
-2    redis                RUNNING    5678     1天3小时           ✅ 运行中
-3    mysql                STOPPED    -        已停止             ⏸️ 已停止
-4    app                  STARTING   -        启动中...          🚀 启动中
-================================================================================
-
-💡 提示: 使用 'sv start/stop/restart <序号>' 来控制进程
-```
-
-### 智能配置检测输出
-
-```
-🔧 检测Supervisor配置...
-✅ 找到配置文件: /etc/supervisor/supervisord.conf
-⚠️  缺少[inet_http_server]配置
-🛠️  正在添加RPC配置...
-✅ 配置更新成功
-🔄 正在重启Supervisor服务...
-✅ Supervisor服务重启成功
-```
-
 ## 🛠️ 开发
-
-### 依赖
-
-- Go 1.23.0+
-- github.com/stretchr/testify v1.11.1 (测试框架)
-- github.com/kardianos/service v1.2.4 (系统服务管理)
 
 ### 开发环境设置
 
@@ -310,6 +331,9 @@ go test -v ./pkg/utils/
 # 生成覆盖率报告
 go test -coverprofile=coverage.out
 go tool cover -html=coverage.out -o coverage.html
+
+# 基准测试
+go test -bench=. -benchmem
 ```
 
 ### 编译选项
@@ -327,21 +351,34 @@ GOOS=windows GOARCH=amd64 go build -o sv-windows-amd64.exe main.go
 GOOS=darwin GOARCH=amd64 go build -o sv-darwin-amd64 main.go
 ```
 
-### 项目结构
+### 依赖管理
+
+```bash
+# 整理依赖
+go mod tidy
+
+# 验证依赖
+go mod verify
+
+# 查看依赖图
+go mod graph
+```
+
+### 项目结构详解
 
 ```
 pkg/
 ├── cli/                   # CLI应用层
-│   ├── app.go            # 主应用逻辑
-│   └── renderer.go       # 渲染和格式化
+│   ├── app.go            # 主应用逻辑（84行）
+│   └── renderer.go       # 渲染和格式化（116行）
 ├── supervisor/            # Supervisor核心功能
-│   ├── rpc_client.go     # XML-RPC客户端
-│   ├── types.go          # 数据结构定义
-│   ├── config_detector.go # 配置检测和自动配置
-│   ├── service_manager.go # 系统服务管理
-│   └── process_control.go # 进程控制逻辑
+│   ├── rpc_client.go     # XML-RPC客户端（335行）
+│   ├── types.go          # 数据结构定义（96行）
+│   ├── config_detector.go # 配置检测和自动配置（299行）
+│   ├── service_manager.go # 系统服务管理（429行）
+│   └── process_control.go # 进程控制逻辑（119行）
 └── utils/                 # 工具函数
-    └── common.go         # 通用工具函数
+    └── common.go         # 通用工具函数和数据结构（499行）
 ```
 
 ## 🔍 故障排除
@@ -363,6 +400,13 @@ pkg/
 - **添加缺失配置**: 自动添加RPC和HTTP服务器配置
 - **配置验证**: 验证配置文件的正确性
 - **优雅降级**: 配置失败时回退到命令行模式
+
+### 双模式架构
+
+工具采用智能双模式架构：
+- **RPC模式**: 优先使用XML-RPC通信，性能更佳
+- **命令行模式**: 自动回退到supervisorctl命令，确保兼容性
+- **智能切换**: 透明模式切换，用户无感知
 
 ### 手动配置
 
@@ -414,10 +458,7 @@ journalctl -u sv -f  # Linux
 - 所有用户界面使用中文
 - 核心功能必须有测试覆盖
 - 保持模块化架构设计
-
-## 📄 许可证
-
-MIT License
+- 新功能应围绕简化Supervisor管理的核心价值
 
 ## 🔗 相关链接
 
@@ -425,6 +466,20 @@ MIT License
 - [Go语言官网](https://golang.org/)
 - [问题反馈](https://github.com/your-repo/sv/issues)
 
+## 📄 许可证
+
+MIT License
+
 ---
 
 **享受便捷的进程管理体验！** 🎉
+
+### 核心价值
+
+记住这个工具的强大之处在于：
+- **序号化操作** - 让进程管理更加高效
+- **智能配置** - 自动检测和配置环境
+- **完美显示** - 美观的表格和精确的时间格式
+- **双模式架构** - 确保在各种环境下都能正常工作
+
+让复杂的Supervisor进程管理变得简单高效！✨
