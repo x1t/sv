@@ -3,6 +3,7 @@ package main
 import (
 	"testing"
 
+	"sv/pkg/utils"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -39,7 +40,7 @@ func TestGetStateValue(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		result := getStateValue(tc.stateName)
+		result := utils.GetStateValue(tc.stateName)
 		assert.Equal(t, tc.expected, result, "State name: %s", tc.stateName)
 	}
 }
@@ -60,7 +61,7 @@ func TestGetStringValue(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		result := getStringValue(tc.input)
+		result := utils.GetStringValue(tc.input)
 		assert.Equal(t, tc.expected, result, "Input: %v", tc.input)
 	}
 }
@@ -81,7 +82,7 @@ func TestGetIntValue(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		result := getIntValue(tc.input)
+		result := utils.GetIntValue(tc.input)
 		assert.Equal(t, tc.expected, result, "Input: %v", tc.input)
 	}
 }
@@ -106,7 +107,7 @@ func TestFormatUptime(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		result := formatUptime(tc.seconds)
+		result := utils.FormatUptime(tc.seconds)
 		assert.Equal(t, tc.expected, result, "Seconds: %d", tc.seconds)
 	}
 }
@@ -127,7 +128,7 @@ func TestGetColorByState(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		result := getColorByState(tc.state)
+		result := utils.GetColorByState(tc.state)
 		assert.Equal(t, tc.expected, result, "State: %d", tc.state)
 	}
 }
@@ -148,7 +149,7 @@ func TestGetStateIcon(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		result := getStateIcon(tc.state)
+		result := utils.GetStateIcon(tc.state)
 		assert.Equal(t, tc.expected, result, "State: %d", tc.state)
 	}
 }
@@ -167,7 +168,7 @@ func TestGetActionIcon(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		result := getActionIcon(tc.action)
+		result := utils.GetActionIcon(tc.action)
 		assert.Equal(t, tc.expected, result, "Action: %s", tc.action)
 	}
 }
@@ -182,7 +183,7 @@ web:web_00                       STARTING
 web:web_01                       FATAL     Exited too quickly (process log may have details)
 database:db_00                   BACKOFF   Exited too quickly (process log may have details)`
 
-	processes := parseSupervisorctlOutput(output)
+	processes := utils.ParseSupervisorctlOutput(output)
 
 	assert.Len(t, processes, 6)
 
@@ -225,7 +226,7 @@ database:db_00                   BACKOFF   Exited too quickly (process log may h
 
 // TestParseSupervisorctlOutput_Empty 测试解析空输出
 func TestParseSupervisorctlOutput_Empty(t *testing.T) {
-	processes := parseSupervisorctlOutput("")
+	processes := utils.ParseSupervisorctlOutput("")
 	assert.Len(t, processes, 0)
 }
 
@@ -237,7 +238,7 @@ redis                          RUNNING   pid 5678, uptime 2d
 
 another invalid line`
 
-	processes := parseSupervisorctlOutput(output)
+	processes := utils.ParseSupervisorctlOutput(output)
 
 	// 应该只解析有效的行
 	assert.Len(t, processes, 2)
@@ -248,7 +249,7 @@ another invalid line`
 // TestParseProcessIndices 测试解析进程索引
 func TestParseProcessIndices(t *testing.T) {
 	// 创建模拟进程列表
-	processes := []ProcessInfo{
+	processes := []utils.ProcessInfo{
 		{Name: "process1", Index: 1},
 		{Name: "process2", Index: 2},
 		{Name: "process3", Index: 3},
@@ -314,7 +315,7 @@ func TestParseProcessIndices(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			result, err := ParseProcessIndices(tc.args, processes)
+			result, err := utils.ParseProcessIndices(tc.args, processes)
 
 			if tc.hasError {
 				assert.Error(t, err, "Test case: %s", tc.name)

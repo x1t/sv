@@ -6,6 +6,7 @@ import (
 	"os"
 	"testing"
 
+	"sv/pkg/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 )
@@ -35,7 +36,7 @@ func (suite *UtilsTestSuite) TestGetStringValue() {
 	}
 
 	for _, tc := range testCases {
-		result := getStringValue(tc.input)
+		result := utils.GetStringValue(tc.input)
 		assert.Equal(suite.T(), tc.expected, result, "Input: %v", tc.input)
 	}
 }
@@ -56,7 +57,7 @@ func (suite *UtilsTestSuite) TestGetIntValue() {
 	}
 
 	for _, tc := range testCases {
-		result := getIntValue(tc.input)
+		result := utils.GetIntValue(tc.input)
 		assert.Equal(suite.T(), tc.expected, result, "Input: %v", tc.input)
 	}
 }
@@ -81,7 +82,7 @@ func (suite *UtilsTestSuite) TestFormatUptime() {
 	}
 
 	for _, tc := range testCases {
-		result := formatUptime(tc.seconds)
+		result := utils.FormatUptime(tc.seconds)
 		assert.Equal(suite.T(), tc.expected, result, "Seconds: %d", tc.seconds)
 	}
 }
@@ -102,7 +103,7 @@ func (suite *UtilsTestSuite) TestGetColorByState() {
 	}
 
 	for _, tc := range testCases {
-		result := getColorByState(tc.state)
+		result := utils.GetColorByState(tc.state)
 		assert.Equal(suite.T(), tc.expected, result, "State: %d", tc.state)
 	}
 }
@@ -123,7 +124,7 @@ func (suite *UtilsTestSuite) TestGetStateIcon() {
 	}
 
 	for _, tc := range testCases {
-		result := getStateIcon(tc.state)
+		result := utils.GetStateIcon(tc.state)
 		assert.Equal(suite.T(), tc.expected, result, "State: %d", tc.state)
 	}
 }
@@ -142,7 +143,7 @@ func (suite *UtilsTestSuite) TestGetActionIcon() {
 	}
 
 	for _, tc := range testCases {
-		result := getActionIcon(tc.action)
+		result := utils.GetActionIcon(tc.action)
 		assert.Equal(suite.T(), tc.expected, result, "Action: %s", tc.action)
 	}
 }
@@ -155,7 +156,7 @@ func (suite *UtilsTestSuite) TestDisplayStatus() {
 	os.Stdout = w
 
 	// 创建测试进程数据
-	processes := []ProcessInfo{
+	processes := []utils.ProcessInfo{
 		{
 			Index:       1,
 			Name:        "nginx",
@@ -177,7 +178,7 @@ func (suite *UtilsTestSuite) TestDisplayStatus() {
 	}
 
 	// 调用显示函数
-	DisplayStatus(processes)
+	utils.DisplayStatus(processes)
 
 	// 恢复标准输出并读取捕获的内容
 	w.Close()
@@ -210,7 +211,7 @@ func (suite *UtilsTestSuite) TestDisplayStatus_Empty() {
 	os.Stdout = w
 
 	// 调用显示函数
-	DisplayStatus([]ProcessInfo{})
+	utils.DisplayStatus([]utils.ProcessInfo{})
 
 	// 恢复标准输出并读取捕获的内容
 	w.Close()
@@ -230,7 +231,7 @@ func (suite *UtilsTestSuite) TestDisplayStatus_SingleProcess() {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	processes := []ProcessInfo{
+	processes := []utils.ProcessInfo{
 		{
 			Index:       1,
 			Name:        "single-process",
@@ -242,7 +243,7 @@ func (suite *UtilsTestSuite) TestDisplayStatus_SingleProcess() {
 		},
 	}
 
-	DisplayStatus(processes)
+	utils.DisplayStatus(processes)
 
 	// 恢复标准输出并读取捕获的内容
 	w.Close()
@@ -296,7 +297,7 @@ another:process_with_colon     STARTING`,
 
 	for _, tc := range testCases {
 		suite.Run(tc.name, func() {
-			processes := parseSupervisorctlOutput(tc.output)
+			processes := utils.ParseSupervisorctlOutput(tc.output)
 			assert.Len(suite.T(), processes, tc.expected)
 		})
 	}
@@ -313,7 +314,7 @@ mongodb                  FATAL     Killed`
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		parseSupervisorctlOutput(output)
+		utils.ParseSupervisorctlOutput(output)
 	}
 }
 
@@ -324,7 +325,7 @@ func BenchmarkFormatUptime(b *testing.B) {
 	for _, seconds := range testCases {
 		b.Run(fmt.Sprintf("seconds_%d", seconds), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
-				formatUptime(seconds)
+				utils.FormatUptime(seconds)
 			}
 		})
 	}

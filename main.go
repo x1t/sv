@@ -9,11 +9,11 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/kardianos/service"
+	"sv/pkg/utils"
 )
 
 // XML-RPC数据结构
@@ -307,18 +307,6 @@ type Fault struct {
 	} `xml:"value"`
 }
 
-// ProcessInfo 表示一个进程的信息
-type ProcessInfo struct {
-	Index       int
-	Name        string
-	Group       string
-	State       int
-	StateName   string
-	PID         int
-	Uptime      string
-	Description string
-	ExitStatus  int
-}
 
 // 全局服务管理变量
 var (
@@ -570,7 +558,7 @@ func parseEnhancedValue(ev EnhancedValue) interface{} {
 }
 
 // 更新 getAllProcesses 方法使用新的解析方法
-func (sc *SupervisorClient) GetAllProcesses() ([]ProcessInfo, error) {
+func (sc *SupervisorClient) GetAllProcesses() ([]utils.ProcessInfo, error) {
 	// 首先尝试使用RPC调用
 	result, err := sc.call("supervisor.getAllProcessInfo", nil)
 	if err != nil {
@@ -581,7 +569,7 @@ func (sc *SupervisorClient) GetAllProcesses() ([]ProcessInfo, error) {
 
 	// 将结果转换为适当的类型
 	if processesData, ok := result.([]interface{}); ok {
-		processes := make([]ProcessInfo, len(processesData))
+		processes := make([]utils.ProcessInfo, len(processesData))
 		for i, procData := range processesData {
 			if procMap, ok := procData.(map[string]interface{}); ok {
 				processes[i] = parseProcessInfoFromMap(procMap, i+1)
@@ -595,7 +583,7 @@ func (sc *SupervisorClient) GetAllProcesses() ([]ProcessInfo, error) {
 }
 
 // parseProcessInfoFromMap 从map解析进程信息
-func parseProcessInfoFromMap(procMap map[string]interface{}, index int) ProcessInfo {
+func parseProcessInfoFromMap(procMap map[string]interface{}, index int) utils.ProcessInfo {
 	name := ""
 	if n, ok := procMap["name"]; ok && n != nil {
 		if s, ok := n.(string); ok {
@@ -661,7 +649,7 @@ func parseProcessInfoFromMap(procMap map[string]interface{}, index int) ProcessI
 		uptime = "已停止"
 	}
 
-	return ProcessInfo{
+	return utils.ProcessInfo{
 		Index:       index,
 		Name:        fullName,  // 使用完整进程名称
 		Group:       group,
@@ -669,7 +657,7 @@ func parseProcessInfoFromMap(procMap map[string]interface{}, index int) ProcessI
 		StateName:   stateName,
 		PID:         pid,
 		Uptime:      uptime,
-		Description: getStateIcon(state),
+		Description: utils.GetStateIcon(state),
 		ExitStatus:  0,
 	}
 }
@@ -694,7 +682,7 @@ type ProcessInfoRPC struct {
 }
 
 // parseProcessInfoFromValue 从Value解析进程信息
-func parseProcessInfoFromValue(procValue Value, index int) ProcessInfo {
+func parseProcessInfoFromValue(procValue Value, index int) utils.ProcessInfo {
 	// 目前的解析方法是基于手工解析Value结构体
 	// 但更好的方法是重新设计XML解析结构以直接处理Supervisor的响应
 	// 下面是一个更完整的解析方法
@@ -714,7 +702,7 @@ func parseProcessInfoFromValue(procValue Value, index int) ProcessInfo {
 
 	// 这里需要更完整的解析逻辑，但暂时依赖命令行回退
 	// 一旦我们有了完整的解析器，这部分将被替换
-	return ProcessInfo{
+	return utils.ProcessInfo{
 		Index:       index,
 		Name:        name,
 		Group:       group,
@@ -722,7 +710,7 @@ func parseProcessInfoFromValue(procValue Value, index int) ProcessInfo {
 		StateName:   stateName,
 		PID:         pid,
 		Uptime:      description,
-		Description: getStateIcon(state),
+		Description: utils.GetStateIcon(state),
 		ExitStatus:  0,
 	}
 }
@@ -732,7 +720,7 @@ func parseProcessInfoFromValue(procValue Value, index int) ProcessInfo {
 
 
 // parseProcessInfoRPC 从RPC响应解析进程信息
-func parseProcessInfoRPC(procMap map[string]interface{}, index int) ProcessInfo {
+func parseProcessInfoRPC(procMap map[string]interface{}, index int) utils.ProcessInfo {
 	// 由于valueToMap函数可能不能完全解析复杂结构
 	// 我们需要在GetAllProcesses中直接处理Value结构
 	// 这个函数暂时保留，但可能需要重构
@@ -743,7 +731,7 @@ func parseProcessInfoRPC(procMap map[string]interface{}, index int) ProcessInfo 
 	pid := 0
 	description := ""
 
-	return ProcessInfo{
+	return utils.ProcessInfo{
 		Index:       index,
 		Name:        name,
 		Group:       group,
@@ -751,7 +739,7 @@ func parseProcessInfoRPC(procMap map[string]interface{}, index int) ProcessInfo 
 		StateName:   stateName,
 		PID:         pid,
 		Uptime:      description,
-		Description: getStateIcon(state),
+		Description: utils.GetStateIcon(state),
 		ExitStatus:  0,
 	}
 }
@@ -803,7 +791,7 @@ func extractValueContent(value Value) interface{} {
 }
 
 // getAllProcessesViaCommand 通过命令行方式获取进程信息（回退方案）
-func (sc *SupervisorClient) getAllProcessesViaCommand() ([]ProcessInfo, error) {
+func (sc *SupervisorClient) getAllProcessesViaCommand() ([]utils.ProcessInfo, error) {
 	// 尝试使用 supervisorctl 命令获取真实数据
 	fmt.Println("正在获取Supervisor进程状态...")
 	cmd := exec.Command("supervisorctl", "status")
@@ -813,223 +801,18 @@ func (sc *SupervisorClient) getAllProcessesViaCommand() ([]ProcessInfo, error) {
 		outputStr := string(output)
 		if strings.Contains(outputStr, "RUNNING") || strings.Contains(outputStr, "STOPPED") {
 			fmt.Println("⚠️  获取到进程数据，但可能存在一些状态问题")
-			return parseSupervisorctlOutput(outputStr), nil
+			return utils.ParseSupervisorctlOutput(outputStr), nil
 		}
 		fmt.Printf("❌ supervisorctl 命令失败: %v, 输出: %s\n", err, string(output))
 		return nil, fmt.Errorf("无法获取进程信息: supervisorctl 命令失败: %v", err)
 	}
 
 	fmt.Println("✅ 成功获取真实进程数据")
-	return parseSupervisorctlOutput(string(output)), nil
+	return utils.ParseSupervisorctlOutput(string(output)), nil
 }
 
-// getStringValue 从interface{}获取string值
-func getStringValue(v interface{}) string {
-	if s, ok := v.(string); ok {
-		return s
-	}
-	return ""
-}
 
-// getIntValue 从interface{}获取int值  
-func getIntValue(v interface{}) int {
-	if i, ok := v.(int); ok {
-		return i
-	}
-	return 0
-}
 
-// formatUptime 格式化运行时间（秒转为可读格式）
-func formatUptime(seconds int) string {
-	if seconds == 0 {
-		return "已停止"
-	}
-	
-	days := seconds / 86400
-	hours := (seconds % 86400) / 3600
-	minutes := (seconds % 3600) / 60
-	
-	if days > 0 {
-		return fmt.Sprintf("%d天%d小时%d分", days, hours, minutes)
-	} else if hours > 0 {
-		return fmt.Sprintf("%d小时%d分", hours, minutes)
-	} else if minutes > 0 {
-		return fmt.Sprintf("%d分钟", minutes)
-	} else {
-		return "不到1分钟"
-	}
-}
-
-// parseSupervisorctlOutput 解析 supervisorctl status 命令的输出
-func parseSupervisorctlOutput(output string) []ProcessInfo {
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-	processes := make([]ProcessInfo, 0, len(lines))
-
-	for i, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		// 解析行格式: "group:name  state    pid  uptime"
-		// 例如: "agent:agent_00                   RUNNING   pid 988995, uptime 30 days, 16:17:38"
-
-		// 使用正则表达式或更精确的方式提取进程名称（第一个字段）
-		// 我们需要确保第一个字段是完整的名称（包含冒号）
-		lineCopy := strings.TrimSpace(line)
-		if lineCopy == "" {
-			continue
-		}
-
-		// 找到第一个非空格序列作为进程名
-		var name string
-		var rest string
-		parts := strings.SplitN(lineCopy, " ", 2) // 只分割为两部分，确保进程名中的空格被保留
-		if len(parts) >= 1 {
-			name = strings.TrimSpace(parts[0])
-			if len(parts) > 1 {
-				rest = strings.TrimSpace(parts[1])
-			} else {
-				rest = ""
-			}
-		} else {
-			continue // 跳过无法解析的行
-		}
-
-		// 检查行是否符合进程状态行的基本格式，避免解析无效行如 "invalid line without proper format"
-		if !isValidProcessLine(name, rest) {
-			continue // 跳过无效行
-		}
-
-		// 解析剩余部分
-		restFields := strings.Fields(rest)
-		if len(restFields) < 1 {
-			continue
-		}
-
-		stateName := restFields[0]
-		pid := 0
-		uptime := ""
-
-		// 解析PID和运行时间
-		for j, field := range restFields {
-			if field == "pid" && j+1 < len(restFields) {
-				// 保留原始的pid字段，不删除逗号，因为后续解析可能需要
-				pidStr := restFields[j+1]
-				if strings.HasSuffix(pidStr, ",") {
-					pidStr = strings.TrimSuffix(pidStr, ",")
-				}
-				if p, err := strconv.Atoi(pidStr); err == nil {
-					pid = p
-				}
-			}
-			if field == "uptime" && j+1 < len(restFields) {
-				// 组合uptime后面的所有字段，保持原始格式
-				uptimeFields := restFields[j+1:]
-				uptime = strings.Join(uptimeFields, " ")
-				break
-			}
-		}
-
-		state := getStateValue(stateName)
-
-		// 创建进程信息时，如果uptime为空且状态不是RUNNING，尝试使用rest的剩余部分
-		if uptime == "" && !strings.Contains(strings.ToUpper(stateName), "RUNNING") {
-			// 检查rest是否包含其他状态信息，如"Not started"
-			if len(restFields) > 1 {
-				// 重新构造从stateName开始的剩余部分
-				stateIdx := -1
-				for idx, field := range restFields {
-					if field == stateName && stateIdx == -1 {
-						stateIdx = idx
-						break
-					}
-				}
-				if stateIdx >= 0 && stateIdx+1 < len(restFields) {
-					extraInfo := restFields[stateIdx+1:]
-					if len(extraInfo) > 0 {
-						// 拼接额外信息，但要排除PID相关字段
-						var extraParts []string
-						skipNext := false
-						for _, part := range extraInfo {
-							if skipNext {
-								skipNext = false
-								continue
-							}
-							if part == "pid" {
-								skipNext = true // 跳过pid值
-								continue
-							}
-							extraParts = append(extraParts, part)
-						}
-						if len(extraParts) > 0 {
-							uptime = strings.Join(extraParts, " ")
-						}
-					}
-				}
-			}
-		}
-
-		processes = append(processes, ProcessInfo{
-			Index:       i + 1,
-			Name:        name, // 完整的进程名称，例如 "agent:agent_00"
-			State:       state,
-			StateName:   stateName,
-			PID:         pid,
-			Uptime:      uptime,
-			Description: getStateIcon(state),
-			ExitStatus:  0,
-		})
-	}
-
-	return processes
-}
-
-// isValidProcessLine 检查行是否符合进程状态行的基本格式
-func isValidProcessLine(name string, rest string) bool {
-	// 检查进程名是否符合基本格式（包含字母数字下划线等）
-	if len(name) == 0 {
-		return false
-	}
-
-	// 检查剩余部分是否包含常见的状态值
-	restLower := strings.ToLower(rest)
-	commonStates := []string{"running", "stopped", "starting", "stopping", "fatal", "backoff"}
-
-	for _, state := range commonStates {
-		if strings.Contains(restLower, state) {
-			return true
-		}
-	}
-
-	// 如果没有找到常见的状态，但rest包含pid或uptime等关键词，也认为是有效的
-	if strings.Contains(restLower, "pid") || strings.Contains(restLower, "uptime") ||
-	   strings.Contains(restLower, "not started") || strings.Contains(restLower, "exited") {
-		return true
-	}
-
-	return false
-}
-
-// getStateValue 根据状态名称获取状态代码
-func getStateValue(stateName string) int {
-	switch strings.ToUpper(stateName) {
-	case "RUNNING":
-		return 20
-	case "STARTING":
-		return 10
-	case "STOPPING":
-		return 30
-	case "STOPPED":
-		return 0
-	case "FATAL":
-		return 100
-	case "BACKOFF":
-		return 200
-	default:
-		return 0
-	}
-}
 
 // ControlProcess 控制进程（启动/停止/重启）
 func (sc *SupervisorClient) ControlProcess(action, processName string) error {
@@ -1115,151 +898,7 @@ func (sc *SupervisorClient) controlProcessViaCommand(action, processName string)
 	return nil
 }
 
-// DisplayStatus 显示进程状态
-func DisplayStatus(processes []ProcessInfo) {
-	if len(processes) == 0 {
-		fmt.Println("没有找到任何进程")
-		return
-	}
 
-	fmt.Printf("%-4s %-20s %-10s %-8s %-15s %s\n", "序号", "名称", "状态", "PID", "运行时间", "描述")
-	fmt.Println(strings.Repeat("-", 80))
-
-	for _, proc := range processes {
-		statusColor := getColorByState(proc.State)
-		pidStr := strconv.Itoa(proc.PID)
-		if proc.PID == 0 {
-			pidStr = "-"
-		}
-
-		fmt.Printf("%-4d %-20s %s%-10s%s %-8s %-15s %s\n",
-			proc.Index,
-			proc.Name,
-			statusColor, proc.StateName, "\x1b[0m",
-			pidStr,
-			proc.Uptime,
-			getStateIcon(proc.State))
-	}
-}
-
-// getColorByState 根据状态获取颜色
-func getColorByState(state int) string {
-	switch state {
-	case 20: // RUNNING
-		return "\x1b[32m" // 绿色
-	case 10: // STARTING
-		return "\x1b[33m" // 黄色
-	case 30: // STOPPING
-		return "\x1b[33m" // 黄色
-	case 100: // FATAL
-		return "\x1b[31m" // 红色
-	default:
-		return "\x1b[37m" // 白色
-	}
-}
-
-// getStateIcon 获取状态图标
-func getStateIcon(state int) string {
-	switch state {
-	case 20: // RUNNING
-		return "✅ 运行中"
-	case 10: // STARTING
-		return "🚀 启动中"
-	case 30: // STOPPING
-		return "⏹️ 停止中"
-	case 0: // STOPPED
-		return "⏸️ 已停止"
-	case 100: // FATAL
-		return "❌ 致命错误"
-	case 200: // BACKOFF
-		return "⚠️ 重试中"
-	default:
-		return "❓ 未知"
-	}
-}
-
-// ParseProcessIndices 解析进程索引参数
-func ParseProcessIndices(args []string, processes []ProcessInfo) ([]string, error) {
-	var names []string
-	var invalidIndices []int
-
-	for _, arg := range args {
-		// 检查是否为范围格式 (如: 1-5)
-		if strings.Contains(arg, "-") {
-			parts := strings.Split(arg, "-")
-			if len(parts) != 2 {
-				return nil, fmt.Errorf("无效的范围格式: %s", arg)
-			}
-
-			start, err1 := strconv.Atoi(parts[0])
-			end, err2 := strconv.Atoi(parts[1])
-			if err1 != nil || err2 != nil {
-				return nil, fmt.Errorf("无效的范围数字: %s", arg)
-			}
-
-			if start < 1 || end > len(processes) || start > end {
-				return nil, fmt.Errorf("范围超出有效区间: %s", arg)
-			}
-
-			for i := start; i <= end; i++ {
-				names = append(names, processes[i-1].Name)
-			}
-		} else {
-			// 单个数字
-			index, err := strconv.Atoi(arg)
-			if err != nil {
-				// 如果不是数字，检查是否为进程名（可能为简写或完整名称）
-				// 首先检查是否为完整名称（包含冒号）
-				if strings.Contains(arg, ":") {
-					// 这是一个完整的进程名，直接添加
-					names = append(names, arg)
-				} else {
-					// 这是一个简写名，尝试找到匹配的完整进程名
-					found := false
-					for _, proc := range processes {
-						// 检查是否与组名:进程名匹配
-						if strings.Contains(proc.Name, ":") && (proc.Name == arg ||
-							strings.Split(proc.Name, ":")[1] == arg) {
-							names = append(names, proc.Name)
-							found = true
-							break
-						}
-						// 或者直接匹配整个进程名
-						if proc.Name == arg {
-							names = append(names, proc.Name)
-							found = true
-							break
-						}
-					}
-					if !found {
-						// 如果找不到完全匹配，将原参数添加进去，让后续调用处理错误
-						names = append(names, arg)
-					}
-				}
-				continue
-			}
-
-			if index < 1 || index > len(processes) {
-				invalidIndices = append(invalidIndices, index)
-				continue
-			}
-
-			// 添加边界检查以避免索引越界
-			if index-1 >= len(processes) {
-				invalidIndices = append(invalidIndices, index)
-				continue
-			}
-
-			names = append(names, processes[index-1].Name)
-		}
-	}
-
-	if len(invalidIndices) > 0 {
-		return nil, fmt.Errorf("无效的进程序号: %v (有效范围: 1-%d)", invalidIndices, len(processes))
-	}
-
-	return names, nil
-}
 
 // readSupervisorConfig 读取supervisor配置获取连接信息
 func readSupervisorConfig() (host, username, password string) {
@@ -1622,7 +1261,7 @@ func showStatus(client *SupervisorClient) {
 
 	fmt.Printf("\n🔍 Supervisor进程状态 (共%d个进程)\n", len(processes))
 	fmt.Println(strings.Repeat("=", 80))
-	DisplayStatus(processes)
+	utils.DisplayStatus(processes)
 	fmt.Println(strings.Repeat("=", 80))
 	fmt.Println("\n💡 提示: 使用 'sv start/stop/restart <序号>' 来控制进程")
 	fmt.Println("🔧 配置: 设置SUPERVISOR_HOST环境变量来指定Supervisor地址")
@@ -1638,7 +1277,7 @@ func controlProcesses(client *SupervisorClient, action string, args []string) {
 	}
 
 	// 解析进程名称
-	processNames, err := ParseProcessIndices(args, processes)
+	processNames, err := utils.ParseProcessIndices(args, processes)
 	if err != nil {
 		fmt.Printf("❌ 解析进程参数失败: %v\n", err)
 		os.Exit(1)
@@ -1649,7 +1288,7 @@ func controlProcesses(client *SupervisorClient, action string, args []string) {
 	// 执行控制操作
 	var successCount, failCount int
 	for _, name := range processNames {
-		fmt.Printf("  %s 进程 %s ... ", getActionIcon(action), name)
+		fmt.Printf("  %s 进程 %s ... ", utils.GetActionIcon(action), name)
 		err := client.ControlProcess(action, name)
 		if err != nil {
 			fmt.Printf("❌ 失败 (%v)\n", err)
@@ -1667,18 +1306,6 @@ func controlProcesses(client *SupervisorClient, action string, args []string) {
 	}
 }
 
-func getActionIcon(action string) string {
-	switch action {
-	case "start":
-		return "🚀 启动"
-	case "stop":
-		return "⏹️ 停止"
-	case "restart":
-		return "🔄 重启"
-	default:
-		return "⚙️ 操作"
-	}
-}
 
 func printUsage() {
 	fmt.Println("sv - Supervisor进程管理工具")

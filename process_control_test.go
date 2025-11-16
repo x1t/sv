@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"testing"
 
+	"sv/pkg/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 )
@@ -48,7 +49,7 @@ web:web_00                       STARTING
 web:web_01                       FATAL     Exited too quickly (process log may have details)
 database:db_00                   BACKOFF   Exited too quickly (process log may have details)`
 
-	processes := parseSupervisorctlOutput(output)
+	processes := utils.ParseSupervisorctlOutput(output)
 
 	assert.Len(suite.T(), processes, 6)
 
@@ -91,7 +92,7 @@ database:db_00                   BACKOFF   Exited too quickly (process log may h
 
 // TestParseSupervisorctlOutput_Empty 测试解析空输出
 func (suite *ProcessControlTestSuite) TestParseSupervisorctlOutput_Empty() {
-	processes := parseSupervisorctlOutput("")
+	processes := utils.ParseSupervisorctlOutput("")
 	assert.Len(suite.T(), processes, 0)
 }
 
@@ -103,7 +104,7 @@ redis                          RUNNING   pid 5678, uptime 2d
 
 another invalid line`
 
-	processes := parseSupervisorctlOutput(output)
+	processes := utils.ParseSupervisorctlOutput(output)
 
 	// 应该只解析有效的行
 	assert.Len(suite.T(), processes, 2)
@@ -142,7 +143,7 @@ func (suite *ProcessControlTestSuite) TestControlProcess_InvalidAction() {
 // TestParseProcessIndices 测试解析进程索引
 func (suite *ProcessControlTestSuite) TestParseProcessIndices() {
 	// 创建模拟进程列表
-	processes := []ProcessInfo{
+	processes := []utils.ProcessInfo{
 		{Name: "process1", Index: 1},
 		{Name: "process2", Index: 2},
 		{Name: "process3", Index: 3},
@@ -208,7 +209,7 @@ func (suite *ProcessControlTestSuite) TestParseProcessIndices() {
 
 	for _, tc := range testCases {
 		suite.Run(tc.name, func() {
-			result, err := ParseProcessIndices(tc.args, processes)
+			result, err := utils.ParseProcessIndices(tc.args, processes)
 
 			if tc.hasError {
 				assert.Error(suite.T(), err, "Test case: %s", tc.name)
@@ -223,8 +224,8 @@ func (suite *ProcessControlTestSuite) TestParseProcessIndices() {
 
 // TestParseProcessIndices_EmptyArgs 测试空参数
 func (suite *ProcessControlTestSuite) TestParseProcessIndices_EmptyArgs() {
-	processes := []ProcessInfo{{Name: "process1", Index: 1}}
-	result, err := ParseProcessIndices([]string{}, processes)
+	processes := []utils.ProcessInfo{{Name: "process1", Index: 1}}
+	result, err := utils.ParseProcessIndices([]string{}, processes)
 	assert.NoError(suite.T(), err)
 	assert.Empty(suite.T(), result)
 }
