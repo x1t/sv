@@ -1,23 +1,15 @@
 package main
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/x1t/sv/pkg/cli"
 )
 
-
-
-
-
-
-
-
-
 func main() {
-	app := cli.NewCLIApp()
-	err := app.Run()
-	if err != nil {
+	if err := cli.NewCLIApp().Run(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "❌ %v\n", err)
 		os.Exit(1)
 	}
 }

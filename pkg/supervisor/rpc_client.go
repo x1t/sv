@@ -2,335 +2,561 @@ package supervisor
 
 import (
 	"bytes"
+	"context"
 	"encoding/xml"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"net/url"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
+
 	"github.com/x1t/sv/pkg/utils"
 )
 
-// RPCClient Supervisor RPC客户端
+const (
+	DefaultSupervisorHost = "http://localhost:9001/RPC2"
+	defaultHTTPTimeout    = 10 * time.Second
+	defaultCommandTimeout = 10 * time.Second
+	maxRPCResponseSize    = 16 << 20
+)
+
+// RPCClient is a client for Supervisor's XML-RPC endpoint.
 type RPCClient struct {
-	host     string
-	username string
-	password string
-	client   *http.Client
+	host           string
+	username       string
+	password       string
+	client         *http.Client
+	commandPath    string
+	commandTimeout time.Duration
 }
 
-// NewRPCClient 创建新的Supervisor客户端
+// NewRPCClient creates a Supervisor client. An empty host uses the local
+// Supervisor endpoint.
 func NewRPCClient(host, username, password string) *RPCClient {
+	if strings.TrimSpace(host) == "" {
+		host = DefaultSupervisorHost
+	}
+
 	return &RPCClient{
-		host:     host,
-		username: username,
-		password: password,
-		client: &http.Client{
-			Timeout: 10 * time.Second,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				// 禁止HTTP重定向以防止SSRF攻击
-				return http.ErrUseLastResponse
-			},
-		},
+		host:           host,
+		username:       username,
+		password:       password,
+		client:         &http.Client{Timeout: defaultHTTPTimeout, CheckRedirect: refuseRedirects},
+		commandPath:    "supervisorctl",
+		commandTimeout: defaultCommandTimeout,
 	}
 }
 
-// call 调用XML-RPC方法
+func refuseRedirects(_ *http.Request, _ []*http.Request) error {
+	return http.ErrUseLastResponse
+}
+
+// call invokes one XML-RPC method. It is kept as a small wrapper so callers
+// that do not need cancellation can use the default context.
 func (rc *RPCClient) call(method string, params []interface{}) (interface{}, error) {
-	// 构建methodCall
-	call := MethodCall{
-		MethodName: method,
+	return rc.callContext(context.Background(), method, params)
+}
+
+func (rc *RPCClient) callContext(ctx context.Context, method string, params []interface{}) (interface{}, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if strings.TrimSpace(method) == "" {
+		return nil, fmt.Errorf("XML-RPC方法名不能为空")
+	}
+	if err := validateEndpoint(rc.host); err != nil {
+		return nil, err
 	}
 
-	if params != nil {
-		for _, param := range params {
-			var value Value
-			switch v := param.(type) {
-			case string:
-				value.String = v
-			case int:
-				value.Int = v
-			case bool:
-				value.Boolean = v
-			case []interface{}:  // 处理数组参数
-				value.Array = ArrayValues{
-					Data: ArrayData{
-						Values: make([]Value, len(v)),
-					},
-				}
-				for i, item := range v {
-					switch iv := item.(type) {
-					case string:
-						value.Array.Data.Values[i] = Value{String: iv}
-					case int:
-						value.Array.Data.Values[i] = Value{Int: iv}
-					case bool:
-						value.Array.Data.Values[i] = Value{Boolean: iv}
-					}
-				}
-			}
-			call.Params = append(call.Params, Param{Value: value})
+	call := MethodCall{MethodName: method}
+	for _, param := range params {
+		value, err := newRPCValue(param)
+		if err != nil {
+			return nil, fmt.Errorf("XML-RPC参数无效: %w", err)
 		}
+		call.Params = append(call.Params, Param{Value: value})
 	}
 
-	// 序列化为XML
 	xmlData, err := xml.Marshal(call)
 	if err != nil {
-		return nil, fmt.Errorf("XML序列化失败: %v", err)
+		return nil, fmt.Errorf("XML序列化失败: %w", err)
 	}
 
-	// 创建HTTP请求
-	req, err := http.NewRequest("POST", rc.host, bytes.NewBuffer(xmlData))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rc.host, bytes.NewReader(xmlData))
 	if err != nil {
-		return nil, fmt.Errorf("创建请求失败: %v", err)
+		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
-
-	req.Header.Set("Content-Type", "text/xml")
+	req.Header.Set("Accept", "text/xml")
+	req.Header.Set("Content-Type", "text/xml; charset=utf-8")
 	req.Header.Set("User-Agent", "sv-supervisor-client/1.0")
-
-	// 添加认证
-	if rc.username != "" && rc.password != "" {
+	if rc.username != "" {
 		req.SetBasicAuth(rc.username, rc.password)
 	}
 
-	// 发送请求
-	resp, err := rc.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("请求失败: %v", err)
+	client := rc.client
+	if client == nil {
+		client = &http.Client{Timeout: defaultHTTPTimeout, CheckRedirect: refuseRedirects}
 	}
-
-	// 确保在所有路径下都关闭响应体
-	defer func() {
-		if resp != nil && resp.Body != nil {
-			resp.Body.Close()
-		}
-	}()
-
-	// 读取响应
-	body, err := io.ReadAll(resp.Body)
+	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("读取响应失败: %v", err)
+		return nil, fmt.Errorf("请求Supervisor失败: %w", err)
 	}
+	defer resp.Body.Close()
 
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxRPCResponseSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("读取Supervisor响应失败: %w", err)
+	}
+	if len(body) > maxRPCResponseSize {
+		return nil, fmt.Errorf("Supervisor响应超过%d字节限制", maxRPCResponseSize)
+	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP错误: %d, %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("Supervisor返回HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
-	// 为了正确解析响应，我们需要使用EnhancedValue结构
-	// 重新定义MethodResponse使用EnhancedValue
-	response := struct {
-		XMLName xml.Name      `xml:"methodResponse"`
-		Params  []struct {
-			Value EnhancedValue `xml:"param>value"`
-		} `xml:"params"`
-		Fault *struct {
-			Value struct {
-				Struct struct {
-					Member []struct {
-						Name  string        `xml:"name"`
-						Value EnhancedValue `xml:"value"`
-					} `xml:"member"`
-				} `xml:"struct"`
-			} `xml:"value"`
-		} `xml:"fault"`
-	}{}
-
+	var response MethodResponse
 	if err := xml.Unmarshal(body, &response); err != nil {
-		return nil, fmt.Errorf("XML解析失败: %v", err)
+		return nil, fmt.Errorf("XML解析失败: %w", err)
 	}
-
-	// 检查错误
 	if response.Fault != nil {
-		for _, member := range response.Fault.Value.Struct.Member {
-			if member.Name == "faultString" {
-				return nil, fmt.Errorf("XML-RPC错误: %s", member.Value.String)
-			}
-		}
-		return nil, fmt.Errorf("未知XML-RPC错误")
+		return nil, formatRPCFault(response.Fault)
 	}
-
 	if len(response.Params) == 0 {
 		return nil, nil
 	}
 
-	// 解析并返回数据
-	return rc.parseEnhancedValue(response.Params[0].Value), nil
+	value, err := response.Params[0].Value.toInterface()
+	if err != nil {
+		return nil, fmt.Errorf("XML-RPC响应值无效: %w", err)
+	}
+	return value, nil
 }
 
-// parseEnhancedValue 将EnhancedValue转换为Go类型
-func (rc *RPCClient) parseEnhancedValue(ev EnhancedValue) interface{} {
-	if ev.String != "" {
-		return ev.String
+func validateEndpoint(rawURL string) error {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return fmt.Errorf("Supervisor地址无效: %w", err)
 	}
-	if ev.Int != 0 || (ev.String == "" && !ev.Boolean && ev.Double == 0 && ev.Array.Data.Values == nil && ev.Struct.Members == nil) {
-		// 如果int不是0，或者这是唯一设置的字段，则返回int
-		return ev.Int
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("Supervisor地址必须使用http或https")
 	}
-	if ev.Boolean {
-		return ev.Boolean
-	}
-	if ev.Double != 0 {
-		return ev.Double
-	}
-	if ev.Array.Data.Values != nil {
-		// 解析数组
-		result := make([]interface{}, len(ev.Array.Data.Values))
-		for i, val := range ev.Array.Data.Values {
-			result[i] = rc.parseEnhancedValue(val)
-		}
-		return result
-	}
-	if ev.Struct.Members != nil {
-		// 解析结构体
-		result := make(map[string]interface{})
-		for _, member := range ev.Struct.Members {
-			result[member.Name] = rc.parseEnhancedValue(member.Value)
-		}
-		return result
+	if u.Host == "" || u.User != nil {
+		return fmt.Errorf("Supervisor地址必须包含主机且不能在URL中嵌入认证信息")
 	}
 	return nil
 }
 
-// GetAllProcesses 获取所有进程信息
-func (rc *RPCClient) GetAllProcesses() ([]utils.ProcessInfo, error) {
-	// 首先尝试使用RPC调用
-	result, err := rc.call("supervisor.getAllProcessInfo", nil)
-	if err != nil {
-		// 如果RPC调用失败，回退到使用命令行方式
-		fmt.Printf("⚠️  RPC调用失败: %v, 尝试使用命令行工具\n", err)
-		return rc.getAllProcessesViaCommand()
-	}
-
-	// 将结果转换为适当的类型
-	if processesData, ok := result.([]interface{}); ok {
-		processes := make([]utils.ProcessInfo, len(processesData))
-		for i, procData := range processesData {
-			if procMap, ok := procData.(map[string]interface{}); ok {
-				processes[i] = rc.parseProcessInfoFromMap(procMap, i+1)
-			}
+func newRPCValue(input interface{}) (Value, error) {
+	switch value := input.(type) {
+	case nil:
+		return Value{Nil: &struct{}{}}, nil
+	case string:
+		return Value{String: stringPointer(value)}, nil
+	case bool:
+		boolean := RPCBoolean(value)
+		return Value{Boolean: &boolean}, nil
+	case int:
+		number := int64(value)
+		return Value{Int: &number}, nil
+	case int8:
+		number := int64(value)
+		return Value{Int: &number}, nil
+	case int16:
+		number := int64(value)
+		return Value{Int: &number}, nil
+	case int32:
+		number := int64(value)
+		return Value{Int: &number}, nil
+	case int64:
+		number := value
+		return Value{Int: &number}, nil
+	case uint:
+		if uint64(value) > math.MaxInt64 {
+			return Value{}, fmt.Errorf("整数超出XML-RPC范围")
 		}
-		return processes, nil
+		number := int64(value)
+		return Value{Int: &number}, nil
+	case uint8:
+		number := int64(value)
+		return Value{Int: &number}, nil
+	case uint16:
+		number := int64(value)
+		return Value{Int: &number}, nil
+	case uint32:
+		number := int64(value)
+		return Value{Int: &number}, nil
+	case uint64:
+		if value > math.MaxInt64 {
+			return Value{}, fmt.Errorf("整数超出XML-RPC范围")
+		}
+		number := int64(value)
+		return Value{Int: &number}, nil
+	case float32:
+		number := float64(value)
+		return Value{Double: &number}, nil
+	case float64:
+		number := value
+		return Value{Double: &number}, nil
+	case []string:
+		values := make([]interface{}, len(value))
+		for i, item := range value {
+			values[i] = item
+		}
+		return newRPCValue(values)
+	case []interface{}:
+		values := make([]Value, len(value))
+		for i, item := range value {
+			parsed, err := newRPCValue(item)
+			if err != nil {
+				return Value{}, err
+			}
+			values[i] = parsed
+		}
+		return Value{Array: &ArrayValues{Data: ArrayData{Values: values}}}, nil
+	case map[string]interface{}:
+		keys := make([]string, 0, len(value))
+		for key := range value {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		members := make([]StructMember, 0, len(keys))
+		for _, key := range keys {
+			parsed, err := newRPCValue(value[key])
+			if err != nil {
+				return Value{}, err
+			}
+			members = append(members, StructMember{Name: key, Value: parsed})
+		}
+		return Value{Struct: &StructValues{Members: members}}, nil
+	default:
+		return Value{}, fmt.Errorf("不支持的参数类型 %T", input)
 	}
-
-	fmt.Println("⚠️  无法解析RPC响应数据，使用命令行工具作为回退")
-	return rc.getAllProcessesViaCommand()
 }
 
-// parseProcessInfoFromMap 从map解析进程信息
-func (rc *RPCClient) parseProcessInfoFromMap(procMap map[string]interface{}, index int) utils.ProcessInfo {
-	name := ""
-	if n, ok := procMap["name"]; ok && n != nil {
-		if s, ok := n.(string); ok {
-			name = s
+func stringPointer(value string) *string {
+	return &value
+}
+
+func (value Value) toInterface() (interface{}, error) {
+	switch {
+	case value.String != nil:
+		return *value.String, nil
+	case value.Int != nil:
+		return *value.Int, nil
+	case value.I4 != nil:
+		return *value.I4, nil
+	case value.I8 != nil:
+		return *value.I8, nil
+	case value.Boolean != nil:
+		return bool(*value.Boolean), nil
+	case value.Double != nil:
+		return *value.Double, nil
+	case value.Array != nil:
+		result := make([]interface{}, len(value.Array.Data.Values))
+		for i, item := range value.Array.Data.Values {
+			parsed, err := item.toInterface()
+			if err != nil {
+				return nil, err
+			}
+			result[i] = parsed
 		}
+		return result, nil
+	case value.Struct != nil:
+		result := make(map[string]interface{}, len(value.Struct.Members))
+		for _, member := range value.Struct.Members {
+			parsed, err := member.Value.toInterface()
+			if err != nil {
+				return nil, err
+			}
+			result[member.Name] = parsed
+		}
+		return result, nil
+	case value.Nil != nil:
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("空或未知的XML-RPC值")
+	}
+}
+
+func formatRPCFault(fault *Fault) error {
+	value, err := fault.Value.toInterface()
+	if err == nil {
+		if members, ok := value.(map[string]interface{}); ok {
+			if message, ok := members["faultString"].(string); ok && message != "" {
+				return fmt.Errorf("XML-RPC错误: %s", message)
+			}
+		}
+		return fmt.Errorf("XML-RPC错误: %v", value)
+	}
+	return fmt.Errorf("XML-RPC错误: %w", err)
+}
+
+// GetAllProcesses obtains all process information, falling back to the local
+// supervisorctl command only for the default local endpoint.
+func (rc *RPCClient) GetAllProcesses() ([]utils.ProcessInfo, error) {
+	return rc.GetAllProcessesContext(context.Background())
+}
+
+func (rc *RPCClient) GetAllProcessesContext(ctx context.Context) ([]utils.ProcessInfo, error) {
+	result, err := rc.callContext(ctx, "supervisor.getAllProcessInfo", nil)
+	if err != nil {
+		if rc.canUseCommandFallback() {
+			processes, fallbackErr := rc.getAllProcessesViaCommand(ctx)
+			if fallbackErr == nil {
+				return processes, nil
+			}
+			return nil, fmt.Errorf("RPC获取进程失败: %v；supervisorctl回退失败: %w", err, fallbackErr)
+		}
+		return nil, fmt.Errorf("RPC获取进程失败: %w", err)
 	}
 
-	group := ""
-	if g, ok := procMap["group"]; ok && g != nil {
-		if s, ok := g.(string); ok {
-			group = s
-		}
+	processesData, ok := result.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("RPC返回的进程列表类型错误: %T", result)
 	}
 
-	state := 0
-	if s, ok := procMap["state"]; ok && s != nil {
-		if f, ok := s.(float64); ok {
-			state = int(f)
-		} else if i, ok := s.(int); ok {
-			state = i
-		} else if i, ok := s.(float32); ok {
-			state = int(i)
+	processes := make([]utils.ProcessInfo, 0, len(processesData))
+	for _, processData := range processesData {
+		processMap, ok := processData.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("RPC进程信息类型错误: %T", processData)
 		}
-	}
-
-	stateName := ""
-	if sn, ok := procMap["statename"]; ok && sn != nil {
-		if s, ok := sn.(string); ok {
-			stateName = s
+		process, err := parseProcessInfoFromMap(processMap, len(processes)+1)
+		if err != nil {
+			return nil, err
 		}
+		processes = append(processes, process)
 	}
+	return processes, nil
+}
 
-	pid := 0
-	if p, ok := procMap["pid"]; ok && p != nil {
-		if f, ok := p.(float64); ok {
-			pid = int(f)
-		} else if i, ok := p.(int); ok {
-			pid = i
-		} else if i, ok := p.(float32); ok {
-			pid = int(i)
-		}
+func parseProcessInfoFromMap(processMap map[string]interface{}, index int) (utils.ProcessInfo, error) {
+	name, ok := stringValue(processMap, "name")
+	if !ok || strings.TrimSpace(name) == "" {
+		return utils.ProcessInfo{}, fmt.Errorf("RPC进程缺少有效名称")
 	}
+	group, _ := stringValue(processMap, "group")
+	start, _ := floatValue(processMap["start"])
+	stop, _ := floatValue(processMap["stop"])
+	now, _ := floatValue(processMap["now"])
+	state, _ := intValue(processMap["state"])
+	stateName, _ := stringValue(processMap, "statename")
+	spawnErr, _ := stringValue(processMap, "spawnerr")
+	pid, _ := intValue(processMap["pid"])
+	logfile, _ := stringValue(processMap, "logfile")
+	stdoutLogfile, _ := stringValue(processMap, "stdout_logfile")
+	stderrLogfile, _ := stringValue(processMap, "stderr_logfile")
+	exitStatus, _ := intValue(processMap["exitstatus"])
+	description, _ := stringValue(processMap, "description")
 
-	description := ""
-	if d, ok := procMap["description"]; ok && d != nil {
-		if s, ok := d.(string); ok {
-			description = s
-		}
-	}
-
-	// 生成完整进程名称 (group:name)
 	fullName := name
-	if group != "" && name != "" {
+	if group != "" && group != name && name != "" && !strings.Contains(name, ":") {
 		fullName = group + ":" + name
 	}
 
-	// 生成状态描述 - 处理运行时间
-	var uptime string
-	if pid > 0 {
-		// 如果有PID，需要从描述中提取运行时间
-		// description 格式通常是 "pid 12345, uptime 4:46:03"
-		if strings.Contains(description, "uptime") {
-			// 提取 uptime 后面的时间部分
-			parts := strings.Split(description, "uptime")
-			if len(parts) > 1 {
-				timeStr := strings.TrimSpace(parts[1])
-				// 移除可能的逗号
-				if strings.HasSuffix(timeStr, ",") {
-					timeStr = strings.TrimSuffix(timeStr, ",")
-				}
-				// 使用 utils 包中的函数来格式化时间
-				uptime = utils.ProcessUptimeString(timeStr)
-			} else {
-				uptime = description
-			}
-		} else {
-			uptime = description
-		}
-	} else {
+	uptime := ""
+	if state == utils.StateStopped || pid == 0 {
 		uptime = "已停止"
+	} else if start > 0 && now >= start {
+		uptime = utils.FormatUptime(int(now - start))
 	}
 
 	return utils.ProcessInfo{
-		Index:       index,
-		Name:        fullName,  // 使用完整进程名称
-		Group:       group,
-		State:       state,
-		StateName:   stateName,
-		PID:         pid,
-		Uptime:      uptime,
-		Description: utils.GetStateIcon(state),
-		ExitStatus:  0,
+		Index:         index,
+		Name:          fullName,
+		Group:         group,
+		Start:         start,
+		Stop:          stop,
+		Now:           now,
+		State:         state,
+		StateName:     stateName,
+		SpawnErr:      spawnErr,
+		PID:           pid,
+		Logfile:       logfile,
+		StdoutLogfile: stdoutLogfile,
+		StderrLogfile: stderrLogfile,
+		Uptime:        uptime,
+		Description:   description,
+		ExitStatus:    exitStatus,
+	}, nil
+}
+
+func stringValue(values map[string]interface{}, key string) (string, bool) {
+	value, ok := values[key].(string)
+	return value, ok
+}
+
+func intValue(value interface{}) (int, bool) {
+	var number int64
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int8:
+		return int(typed), true
+	case int16:
+		return int(typed), true
+	case int32:
+		return int(typed), true
+	case int64:
+		number = typed
+	case uint:
+		if uint64(typed) > uint64(maxInt()) {
+			return 0, false
+		}
+		return int(typed), true
+	case uint8:
+		return int(typed), true
+	case uint16:
+		return int(typed), true
+	case uint32:
+		if uint64(typed) > uint64(maxInt()) {
+			return 0, false
+		}
+		return int(typed), true
+	case uint64:
+		if typed > uint64(maxInt()) {
+			return 0, false
+		}
+		return int(typed), true
+	case float32:
+		if float32(math.Trunc(float64(typed))) != typed || float64(typed) < float64(minInt()) || float64(typed) > float64(maxInt()) {
+			return 0, false
+		}
+		return int(typed), true
+	case float64:
+		if math.Trunc(typed) != typed || typed < float64(minInt()) || typed > float64(maxInt()) {
+			return 0, false
+		}
+		return int(typed), true
+	default:
+		return 0, false
+	}
+	if number < int64(minInt()) || number > int64(maxInt()) {
+		return 0, false
+	}
+	return int(number), true
+}
+
+func floatValue(value interface{}) (float64, bool) {
+	switch typed := value.(type) {
+	case float32:
+		return float64(typed), true
+	case float64:
+		return typed, true
+	case int:
+		return float64(typed), true
+	case int8:
+		return float64(typed), true
+	case int16:
+		return float64(typed), true
+	case int32:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	default:
+		return 0, false
 	}
 }
 
-// getAllProcessesViaCommand 通过命令行方式获取进程信息（回退方案）
-func (rc *RPCClient) getAllProcessesViaCommand() ([]utils.ProcessInfo, error) {
-	// 尝试使用 supervisorctl 命令获取真实数据
-	fmt.Println("正在获取Supervisor进程状态...")
-	cmd := exec.Command("supervisorctl", "status")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		// 即使有错误，output中通常也包含有用的信息
-		outputStr := string(output)
-		if strings.Contains(outputStr, "RUNNING") || strings.Contains(outputStr, "STOPPED") {
-			fmt.Println("⚠️  获取到进程数据，但可能存在一些状态问题")
-			return utils.ParseSupervisorctlOutput(outputStr), nil
-		}
-		fmt.Printf("❌ supervisorctl 命令失败: %v, 输出: %s\n", err, string(output))
-		return nil, fmt.Errorf("无法获取进程信息: supervisorctl 命令失败: %v", err)
+func maxInt() int {
+	return int(^uint(0) >> 1)
+}
+
+func minInt() int {
+	return -maxInt() - 1
+}
+
+func (rc *RPCClient) canUseCommandFallback() bool {
+	return strings.TrimRight(rc.host, "/") == strings.TrimRight(DefaultSupervisorHost, "/") && rc.username == "" && rc.password == ""
+}
+
+func (rc *RPCClient) getAllProcessesViaCommand(ctx context.Context) ([]utils.ProcessInfo, error) {
+	output, err := rc.runSupervisorctl(ctx, "status")
+	processes := utils.ParseSupervisorctlOutput(string(output))
+	if err != nil && len(processes) == 0 {
+		return nil, fmt.Errorf("supervisorctl status失败: %w; 输出: %s", err, strings.TrimSpace(string(output)))
+	}
+	if len(processes) == 0 && strings.TrimSpace(string(output)) == "" {
+		return nil, fmt.Errorf("supervisorctl未返回进程信息")
+	}
+	return processes, nil
+}
+
+func (rc *RPCClient) runSupervisorctl(ctx context.Context, args ...string) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timeout := rc.commandTimeout
+	if timeout <= 0 {
+		timeout = defaultCommandTimeout
+	}
+	commandContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	commandPath := rc.commandPath
+	if commandPath == "" {
+		commandPath = "supervisorctl"
+	}
+	return exec.CommandContext(commandContext, commandPath, args...).CombinedOutput()
+}
+
+// ControlProcess uses XML-RPC for local and remote control. Local fallback is
+// limited to the default endpoint so a remote failure can never affect a local
+// Supervisor accidentally.
+func (rc *RPCClient) ControlProcess(action, processName string) error {
+	action = strings.ToLower(strings.TrimSpace(action))
+	if err := validateProcessAction(action); err != nil {
+		return err
+	}
+	if err := validateProcessName(processName); err != nil {
+		return err
 	}
 
-	fmt.Println("✅ 成功获取真实进程数据")
-	return utils.ParseSupervisorctlOutput(string(output)), nil
+	ctx := context.Background()
+	if action == "restart" {
+		if err := rc.controlProcessRPC(ctx, "supervisor.stopProcess", processName); err != nil {
+			if rc.canUseCommandFallback() {
+				return rc.controlProcessViaCommand(ctx, action, processName)
+			}
+			return fmt.Errorf("重启进程失败（停止阶段）: %w", err)
+		}
+		if err := rc.controlProcessRPC(ctx, "supervisor.startProcess", processName); err != nil {
+			return fmt.Errorf("重启进程失败（启动阶段）: %w", err)
+		}
+		return nil
+	}
+
+	method := "supervisor." + action + "Process"
+	if err := rc.controlProcessRPC(ctx, method, processName); err == nil {
+		return nil
+	} else if !rc.canUseCommandFallback() {
+		return fmt.Errorf("%s进程失败: %w", action, err)
+	}
+	return rc.controlProcessViaCommand(ctx, action, processName)
+}
+
+func (rc *RPCClient) controlProcessRPC(ctx context.Context, method, processName string) error {
+	result, err := rc.callContext(ctx, method, []interface{}{processName, true})
+	if err != nil {
+		return err
+	}
+	if success, ok := result.(bool); ok && !success {
+		return fmt.Errorf("Supervisor拒绝了操作")
+	}
+	return nil
+}
+
+func (rc *RPCClient) controlProcessViaCommand(ctx context.Context, action, processName string) error {
+	output, err := rc.runSupervisorctl(ctx, action, processName)
+	if err != nil {
+		return fmt.Errorf("%s进程失败: %w, 输出: %s", action, err, strings.TrimSpace(string(output)))
+	}
+	if strings.Contains(strings.ToUpper(string(output)), "ERROR") {
+		return fmt.Errorf("%s进程失败: %s", action, strings.TrimSpace(string(output)))
+	}
+	return nil
 }

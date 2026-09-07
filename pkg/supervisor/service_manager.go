@@ -2,429 +2,365 @@ package supervisor
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"sync"
 
 	"github.com/kardianos/service"
 )
 
-// ServiceManager 系统服务管理器
+const serviceName = "sv-supervisor-manager"
+
+// ServiceManager 管理 sv 的系统服务生命周期。
 type ServiceManager struct {
-	svcLogger  service.Logger
-	svcService service.Service
-	svcProgram *program
+	out         io.Writer
+	svcLogger   service.Logger
+	svcService  service.Service
+	svcProgram  *program
+	executable  string
+	symlinkPath string
 }
 
-// Program 实现service.Interface接口
 type program struct {
-	done chan struct{}
+	done      chan struct{}
+	stopOnce  sync.Once
+	startOnce sync.Once
+	logger    service.Logger
 }
 
-// Start 服务启动回调
-func (p *program) Start(s service.Service) error {
-	svcLogger.Infof("SV服务正在启动...")
-	go p.run()
+func newProgram(logger service.Logger) *program {
+	return &program{done: make(chan struct{}), logger: logger}
+}
+
+func (p *program) Start(_ service.Service) error {
+	if p == nil {
+		return fmt.Errorf("服务程序未初始化")
+	}
+	p.logInfo("SV服务正在启动...")
+	p.startOnce.Do(func() { go p.run() })
 	return nil
 }
 
-// Stop 服务停止回调
-func (p *program) Stop(s service.Service) error {
-	svcLogger.Infof("SV服务正在停止...")
-	close(p.done)
+func (p *program) Stop(_ service.Service) error {
+	if p == nil {
+		return fmt.Errorf("服务程序未初始化")
+	}
+	p.logInfo("SV服务正在停止...")
+	p.stopOnce.Do(func() { close(p.done) })
 	return nil
 }
 
-// run 服务主循环
 func (p *program) run() {
-	svcLogger.Infof("SV服务已启动，正在后台运行...")
-
-	// 这里可以实现sv的守护进程功能
-	// 比如定期监控Supervisor状态、自动重启异常进程等
-	// 目前保持简单，只是保持服务运行
+	p.logInfo("SV服务已启动，正在后台运行...")
 	<-p.done
-	svcLogger.Infof("SV服务已停止")
+	p.logInfo("SV服务已停止")
 }
 
-var (
-	svcLogger  service.Logger
-	svcService service.Service
-	svcProgram *program
-)
-
-// createSymlink 创建到 /usr/local/bin 的符号链接
-func (sm *ServiceManager) createSymlink() error {
-	// 获取当前可执行文件路径
-	exePath, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("获取可执行文件路径失败: %v", err)
+func (p *program) logInfo(format string, args ...interface{}) {
+	if p.logger != nil {
+		p.logger.Infof(format, args...)
 	}
-
-	// 获取文件状态，确认是普通文件
-	fileInfo, err := os.Stat(exePath)
-	if err != nil {
-		return fmt.Errorf("获取可执行文件状态失败: %v", err)
-	}
-	if fileInfo.IsDir() {
-		return fmt.Errorf("可执行文件路径指向目录: %s", exePath)
-	}
-
-	// 目标符号链接路径
-	targetPath := "/usr/local/bin/sv"
-
-	// 检查是否有权限写入目标目录
-	binDir := filepath.Dir(targetPath)
-	// 尝试创建一个临时文件来检查写权限
-	testFile := filepath.Join(binDir, ".sv_permissions_test")
-	if err := os.WriteFile(testFile, []byte(""), 0644); err != nil {
-		// 如果无法写入，可能是没有权限，需要以sudo运行
-		if os.IsPermission(err) {
-			return fmt.Errorf("没有权限写入 %s 目录，请以sudo身份运行: %v", binDir, err)
-		}
-		// 如果目录不存在，则需要创建
-		if os.IsNotExist(err) {
-			// 检查父目录权限
-			parentDir := filepath.Dir(binDir)
-			testParentFile := filepath.Join(parentDir, ".sv_permissions_test")
-			if err := os.WriteFile(testParentFile, []byte(""), 0644); err != nil {
-				if os.IsPermission(err) {
-					return fmt.Errorf("没有权限写入 %s 目录，请以sudo身份运行", parentDir)
-				}
-			} else {
-				// 清理测试文件
-				os.Remove(testParentFile)
-			}
-		}
-	} else {
-		// 清理测试文件
-		os.Remove(testFile)
-	}
-
-	// 检查目标路径是否已存在
-	if _, err := os.Lstat(targetPath); err == nil {
-		// 检查是否已经是符号链接并指向当前可执行文件
-		if linkDest, linkErr := os.Readlink(targetPath); linkErr == nil {
-			if linkDest == exePath {
-				// 已存在且指向正确的路径，无需操作
-				return nil
-			} else {
-				// 存在但指向不同路径，先删除
-				if removeErr := os.Remove(targetPath); removeErr != nil {
-					return fmt.Errorf("删除现有符号链接失败: %v", removeErr)
-				}
-			}
-		} else {
-			// 是普通文件而不是符号链接，需要删除
-			if removeErr := os.Remove(targetPath); removeErr != nil {
-				return fmt.Errorf("删除现有文件失败: %v", removeErr)
-			}
-		}
-	}
-
-	// 创建 /usr/local/bin 目录（如果不存在）
-	if err := os.MkdirAll(binDir, 0755); err != nil {
-		return fmt.Errorf("创建目录失败: %v", err)
-	}
-
-	// 创建符号链接
-	if err := os.Symlink(exePath, targetPath); err != nil {
-		// 如果权限错误，提示用户以sudo运行
-		if os.IsPermission(err) {
-			return fmt.Errorf("创建符号链接失败，请以sudo身份运行: %v", err)
-		}
-		return fmt.Errorf("创建符号链接失败: %v", err)
-	}
-
-	fmt.Printf("✅ 已创建符号链接: %s -> %s\n", targetPath, exePath)
-	return nil
 }
 
-// removeSymlink 删除到 /usr/local/bin 的符号链接
-func (sm *ServiceManager) removeSymlink() error {
-	targetPath := "/usr/local/bin/sv"
+// NewServiceManager 创建服务管理器。
+func NewServiceManager() *ServiceManager {
+	return &ServiceManager{out: os.Stdout, symlinkPath: "/usr/local/bin/sv"}
+}
 
-	// 检查目标路径是否存在
-	if _, err := os.Lstat(targetPath); os.IsNotExist(err) {
-		// 符号链接不存在，无需操作
+// NewServiceManagerWithWriter 创建可注入输出流的服务管理器。
+func NewServiceManagerWithWriter(out io.Writer) *ServiceManager {
+	manager := NewServiceManager()
+	if out != nil {
+		manager.out = out
+	}
+	return manager
+}
+
+// HandleServiceCommand 处理 service 子命令。
+func (sm *ServiceManager) HandleServiceCommand(args []string) error {
+	if len(args) == 0 {
+		sm.printServiceUsage()
+		return fmt.Errorf("缺少服务操作")
+	}
+	if len(args) > 1 {
+		return fmt.Errorf("服务操作不接受额外参数: %s", strings.Join(args[1:], " "))
+	}
+
+	switch args[0] {
+	case "install":
+		return sm.InstallService()
+	case "uninstall":
+		return sm.UninstallService()
+	case "start":
+		return sm.StartService()
+	case "stop":
+		return sm.StopService()
+	case "restart":
+		return sm.RestartService()
+	case "status":
+		return sm.CheckServiceStatus()
+	default:
+		sm.printServiceUsage()
+		return fmt.Errorf("未知服务操作: %s", args[0])
+	}
+}
+
+func (sm *ServiceManager) printServiceUsage() {
+	_, _ = fmt.Fprintln(sm.out, `用法: sv service <action>
+
+可用操作:
+  install   安装 sv 为系统服务
+  uninstall 卸载 sv 系统服务
+  start     启动 sv 系统服务
+  stop      停止 sv 系统服务
+  restart   重启 sv 系统服务
+  status    查看 sv 服务状态`)
+}
+
+func (sm *ServiceManager) setup() error {
+	if sm == nil {
+		return fmt.Errorf("服务管理器未初始化")
+	}
+	if sm.svcService != nil {
 		return nil
 	}
 
-	// 删除符号链接
-	if err := os.Remove(targetPath); err != nil {
-		return fmt.Errorf("删除符号链接失败: %v", err)
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("获取可执行文件路径失败: %w", err)
+	}
+	executable, err = filepath.Abs(executable)
+	if err != nil {
+		return fmt.Errorf("解析可执行文件路径失败: %w", err)
+	}
+	sm.executable = executable
+	config := &service.Config{
+		Name:        serviceName,
+		DisplayName: "SV Supervisor Manager",
+		Description: "现代化 Supervisor 进程管理工具",
+		Executable:  executable,
+		Arguments:   []string{"daemon"},
 	}
 
-	fmt.Printf("✅ 已删除符号链接: %s\n", targetPath)
+	instance := newProgram(nil)
+	managedService, err := service.New(instance, config)
+	if err != nil {
+		return fmt.Errorf("创建服务失败: %w", err)
+	}
+	logger, err := managedService.Logger(nil)
+	if err != nil {
+		return fmt.Errorf("获取服务日志记录器失败: %w", err)
+	}
+	instance.logger = logger
+	sm.svcLogger = logger
+	sm.svcProgram = instance
+	sm.svcService = managedService
 	return nil
 }
 
-// NewServiceManager 创建新的服务管理器
-func NewServiceManager() *ServiceManager {
-	return &ServiceManager{}
+func (sm *ServiceManager) requireService() error {
+	if sm.svcService != nil {
+		return nil
+	}
+	return sm.setup()
 }
 
-// HandleServiceCommand 处理service子命令
-func (sm *ServiceManager) HandleServiceCommand(args []string) {
-	if len(args) == 0 {
-		fmt.Println("用法: sv service <action>")
-		fmt.Println()
-		fmt.Println("可用操作:")
-		fmt.Println("  install   安装sv为系统服务")
-		fmt.Println("  uninstall 卸载sv系统服务")
-		fmt.Println("  start     启动sv系统服务")
-		fmt.Println("  stop      停止sv系统服务")
-		fmt.Println("  restart   重启sv系统服务")
-		fmt.Println("  status    查看sv服务状态")
-		return
+// InstallService 安装系统服务并创建命令软链接。
+func (sm *ServiceManager) InstallService() error {
+	if err := sm.requireService(); err != nil {
+		return err
 	}
-
-	action := args[0]
-
-	// 获取可执行文件路径
-	exePath, err := os.Executable()
-	if err != nil {
-		fmt.Printf("❌ 获取可执行文件路径失败: %v\n", err)
-		return
+	if _, err := fmt.Fprintln(sm.out, "🔧 正在安装 SV 系统服务..."); err != nil {
+		return err
 	}
-
-	// 创建服务配置
-	svcConfig := &service.Config{
-		Name:        "sv-supervisor-manager",
-		DisplayName: "SV Supervisor Manager",
-		Description: "现代化Supervisor进程管理工具",
-		Executable:  exePath,
-		Arguments:   []string{"daemon"},
+	if err := sm.svcService.Install(); err != nil {
+		return fmt.Errorf("安装服务失败: %w", err)
 	}
-
-	// 创建程序实例
-	programInstance := &program{}
-	svcProgram = programInstance
-
-	// 创建服务实例
-	s, err := service.New(programInstance, svcConfig)
-	if err != nil {
-		fmt.Printf("❌ 创建服务失败: %v\n", err)
-		return
-	}
-
-	svcService = s
-
-	// 获取日志记录器
-	svcLogger, err = s.Logger(nil)
-	if err != nil {
-		fmt.Printf("❌ 获取日志记录器失败: %v\n", err)
-		return
-	}
-
-	switch action {
-	case "install":
-		sm.InstallService()
-	case "uninstall":
-		sm.UninstallService()
-	case "start":
-		sm.StartService()
-	case "stop":
-		sm.StopService()
-	case "restart":
-		sm.RestartService()
-	case "status":
-		sm.CheckServiceStatus()
-	default:
-		fmt.Printf("❌ 未知操作: %s\n\n", action)
-		fmt.Println("可用操作: install, uninstall, start, stop, restart, status")
-	}
-}
-
-// InstallService 安装服务
-func (sm *ServiceManager) InstallService() {
-	fmt.Println("🔧 正在安装SV系统服务...")
-
-	err := svcService.Install()
-	if err != nil {
-		fmt.Printf("❌ 安装失败: %v\n", err)
-		return
-	}
-
-	// 为Unix/Linux系统创建符号链接到/usr/local/bin
 	if runtime.GOOS != "windows" {
-		fmt.Println("🔗 正在创建符号链接...")
 		if err := sm.createSymlink(); err != nil {
-			// 如果符号链接创建失败，输出警告但不中断服务安装
-			fmt.Printf("⚠️  创建符号链接失败: %v\n", err)
-			fmt.Println("💡 提示: 如需将命令添加到PATH，可手动执行: sudo ln -s $(which sv) /usr/local/bin/sv")
+			return fmt.Errorf("服务已安装，但创建命令软链接失败: %w", err)
 		}
 	}
-
-	fmt.Println("✅ SV系统服务安装成功!")
-	fmt.Println()
-	fmt.Println("💡 使用以下命令管理服务:")
-	fmt.Println("  启动服务: sv service start")
-	fmt.Println("  停止服务: sv service stop")
-	fmt.Println("  重启服务: sv service restart")
-	fmt.Println("  查看状态: sv service status")
-	fmt.Println()
-	fmt.Println("🔧 也可以使用系统标准命令:")
-	if isLinux() {
-		fmt.Println("  sudo systemctl start sv-supervisor-manager")
-		fmt.Println("  sudo systemctl enable sv-supervisor-manager")
-		fmt.Println("  sudo systemctl status sv-supervisor-manager")
-	} else if isWindows() {
-		fmt.Println("  net start sv-supervisor-manager")
-		fmt.Println("  sc config sv-supervisor-manager start= auto")
-	}
+	_, err := fmt.Fprintln(sm.out, "✅ SV 系统服务安装成功")
+	return err
 }
 
-// UninstallService 卸载服务
-func (sm *ServiceManager) UninstallService() {
-	fmt.Println("🗑️  正在卸载SV系统服务...")
-
-	err := svcService.Uninstall()
-	if err != nil {
-		fmt.Printf("❌ 卸载失败: %v\n", err)
-		return
+// UninstallService 卸载系统服务并移除由本程序创建的软链接。
+func (sm *ServiceManager) UninstallService() error {
+	if err := sm.requireService(); err != nil {
+		return err
 	}
-
-	// 为Unix/Linux系统移除符号链接
+	if err := sm.svcService.Uninstall(); err != nil {
+		return fmt.Errorf("卸载服务失败: %w", err)
+	}
 	if runtime.GOOS != "windows" {
-		fmt.Println("🔗 正在移除符号链接...")
 		if err := sm.removeSymlink(); err != nil {
-			// 如果符号链接移除失败，输出警告但不中断服务卸载
-			fmt.Printf("⚠️  移除符号链接失败: %v\n", err)
+			return fmt.Errorf("服务已卸载，但移除命令软链接失败: %w", err)
 		}
 	}
-
-	fmt.Println("✅ SV系统服务卸载成功!")
+	_, err := fmt.Fprintln(sm.out, "✅ SV 系统服务卸载成功")
+	return err
 }
 
-// StartService 启动服务
-func (sm *ServiceManager) StartService() {
-	fmt.Println("🚀 正在启动SV系统服务...")
-
-	err := svcService.Start()
-	if err != nil {
-		fmt.Printf("❌ 启动失败: %v\n", err)
-		return
+// StartService 启动系统服务。
+func (sm *ServiceManager) StartService() error {
+	if err := sm.requireService(); err != nil {
+		return err
 	}
-
-	fmt.Println("✅ SV系统服务启动成功!")
+	if err := sm.svcService.Start(); err != nil {
+		return fmt.Errorf("启动服务失败: %w", err)
+	}
+	_, err := fmt.Fprintln(sm.out, "✅ SV 系统服务启动成功")
+	return err
 }
 
-// StopService 停止服务
-func (sm *ServiceManager) StopService() {
-	fmt.Println("⏹️  正在停止SV系统服务...")
-
-	err := svcService.Stop()
-	if err != nil {
-		fmt.Printf("❌ 停止失败: %v\n", err)
-		return
+// StopService 停止系统服务。
+func (sm *ServiceManager) StopService() error {
+	if err := sm.requireService(); err != nil {
+		return err
 	}
-
-	fmt.Println("✅ SV系统服务停止成功!")
+	if err := sm.svcService.Stop(); err != nil {
+		return fmt.Errorf("停止服务失败: %w", err)
+	}
+	_, err := fmt.Fprintln(sm.out, "✅ SV 系统服务停止成功")
+	return err
 }
 
-// RestartService 重启服务
-func (sm *ServiceManager) RestartService() {
-	fmt.Println("🔄 正在重启SV系统服务...")
-
-	err := svcService.Restart()
-	if err != nil {
-		fmt.Printf("❌ 重启失败: %v\n", err)
-		return
+// RestartService 重启系统服务。
+func (sm *ServiceManager) RestartService() error {
+	if err := sm.requireService(); err != nil {
+		return err
 	}
-
-	fmt.Println("✅ SV系统服务重启成功!")
+	if err := sm.svcService.Restart(); err != nil {
+		return fmt.Errorf("重启服务失败: %w", err)
+	}
+	_, err := fmt.Fprintln(sm.out, "✅ SV 系统服务重启成功")
+	return err
 }
 
-// CheckServiceStatus 检查服务状态
-func (sm *ServiceManager) CheckServiceStatus() {
-	fmt.Println("📊 正在查询SV系统服务状态...")
-
-	status, err := svcService.Status()
-	if err != nil {
-		fmt.Printf("❌ 获取状态失败: %v\n", err)
-		return
+// CheckServiceStatus 查询系统服务状态。
+func (sm *ServiceManager) CheckServiceStatus() error {
+	if err := sm.requireService(); err != nil {
+		return err
 	}
-
-	var statusStr string
+	status, err := sm.svcService.Status()
+	if err != nil {
+		return fmt.Errorf("获取服务状态失败: %w", err)
+	}
+	statusText := "⚠️ 其他状态"
 	switch status {
 	case service.StatusRunning:
-		statusStr = "✅ 运行中"
+		statusText = "✅ 运行中"
 	case service.StatusStopped:
-		statusStr = "⏸️ 已停止"
+		statusText = "⏸️ 已停止"
 	case service.StatusUnknown:
-		statusStr = "❓ 未知状态"
-	default:
-		statusStr = "⚠️ 其他状态"
+		statusText = "❓ 未知状态"
 	}
-
-	fmt.Printf("SV系统服务状态: %s\n", statusStr)
-
-	if status == service.StatusRunning {
-		fmt.Println()
-		fmt.Println("💡 服务正在后台运行，可以使用以下命令:")
-		fmt.Println("  sv status          # 查看Supervisor进程状态")
-		fmt.Println("  sv restart 1       # 重启序号为1的进程")
-		fmt.Println("  sv service stop    # 停止SV服务")
-	}
+	_, err = fmt.Fprintf(sm.out, "SV 系统服务状态: %s\n", statusText)
+	return err
 }
 
-// RunServiceDaemon 运行服务守护进程
-func (sm *ServiceManager) RunServiceDaemon() {
-	// 获取可执行文件路径
-	exePath, err := os.Executable()
-	if err != nil {
-		logFatal("获取可执行文件路径失败: %v", err)
+// RunServiceDaemon 运行服务守护进程。
+func (sm *ServiceManager) RunServiceDaemon() error {
+	if err := sm.requireService(); err != nil {
+		return err
 	}
-
-	// 创建服务配置
-	svcConfig := &service.Config{
-		Name:        "sv-supervisor-manager",
-		DisplayName: "SV Supervisor Manager",
-		Description: "现代化Supervisor进程管理工具",
-		Executable:  exePath,
-		Arguments:   []string{"daemon"},
+	if err := sm.svcService.Run(); err != nil {
+		return fmt.Errorf("服务运行失败: %w", err)
 	}
-
-	// 创建程序实例
-	programInstance := &program{}
-	svcProgram = programInstance
-
-	// 创建服务实例
-	s, err := service.New(programInstance, svcConfig)
-	if err != nil {
-		logFatal("创建服务失败: %v", err)
-	}
-
-	svcService = s
-
-	// 获取日志记录器
-	svcLogger, err = s.Logger(nil)
-	if err != nil {
-		logFatal("获取日志记录器失败: %v", err)
-	}
-
-	// 运行服务
-	err = s.Run()
-	if err != nil {
-		logFatal("服务运行失败: %v", err)
-	}
+	return nil
 }
 
-// logFatal 记录致命错误并退出
-func logFatal(format string, args ...interface{}) {
-	if svcLogger != nil {
-		svcLogger.Errorf(format, args...)
+func (sm *ServiceManager) createSymlink() error {
+	if err := sm.requireExecutable(); err != nil {
+		return err
 	}
-	fmt.Printf("❌ "+format+"\n", args...)
-	os.Exit(1)
+	targetPath := sm.symlinkPath
+	if targetPath == "" {
+		return fmt.Errorf("软链接路径不能为空")
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		return fmt.Errorf("创建软链接目录失败: %w", err)
+	}
+
+	info, err := os.Lstat(targetPath)
+	if err == nil {
+		if info.Mode()&os.ModeSymlink == 0 {
+			return fmt.Errorf("目标路径已存在且不是软链接: %s", targetPath)
+		}
+		resolvedTarget, resolveErr := filepath.EvalSymlinks(targetPath)
+		if resolveErr == nil {
+			resolvedExecutable, executableErr := filepath.EvalSymlinks(sm.executable)
+			if executableErr == nil && resolvedTarget == resolvedExecutable {
+				return nil
+			}
+		}
+		return fmt.Errorf("目标软链接已存在且指向其他文件: %s", targetPath)
+	}
+	if !os.IsNotExist(err) {
+		return fmt.Errorf("检查软链接目标失败: %w", err)
+	}
+	if err := os.Symlink(sm.executable, targetPath); err != nil {
+		return fmt.Errorf("创建软链接失败: %w", err)
+	}
+	_, err = fmt.Fprintf(sm.out, "🔗 已创建软链接: %s -> %s\n", targetPath, sm.executable)
+	return err
 }
 
-// isLinux 检查是否为Linux系统
-func isLinux() bool {
-	return runtime.GOOS == "linux"
+func (sm *ServiceManager) removeSymlink() error {
+	if err := sm.requireExecutable(); err != nil {
+		return err
+	}
+	info, err := os.Lstat(sm.symlinkPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("检查软链接失败: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return fmt.Errorf("拒绝删除非软链接路径: %s", sm.symlinkPath)
+	}
+	resolvedTarget, err := filepath.EvalSymlinks(sm.symlinkPath)
+	if err != nil {
+		return fmt.Errorf("解析软链接失败: %w", err)
+	}
+	resolvedExecutable, err := filepath.EvalSymlinks(sm.executable)
+	if err != nil {
+		return fmt.Errorf("解析可执行文件失败: %w", err)
+	}
+	if resolvedTarget != resolvedExecutable {
+		return fmt.Errorf("拒绝删除指向其他文件的软链接: %s", sm.symlinkPath)
+	}
+	if err := os.Remove(sm.symlinkPath); err != nil {
+		return fmt.Errorf("删除软链接失败: %w", err)
+	}
+	_, err = fmt.Fprintf(sm.out, "✅ 已删除软链接: %s\n", sm.symlinkPath)
+	return err
 }
 
-// isWindows 检查是否为Windows系统
-func isWindows() bool {
-	return runtime.GOOS == "windows"
+func (sm *ServiceManager) requireExecutable() error {
+	if sm.executable != "" {
+		return nil
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("获取可执行文件路径失败: %w", err)
+	}
+	executable, err = filepath.Abs(executable)
+	if err != nil {
+		return fmt.Errorf("解析可执行文件路径失败: %w", err)
+	}
+	info, err := os.Stat(executable)
+	if err != nil {
+		return fmt.Errorf("获取可执行文件状态失败: %w", err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("可执行文件路径指向目录: %s", executable)
+	}
+	sm.executable = executable
+	return nil
 }

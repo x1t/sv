@@ -24,12 +24,9 @@ go.work
 # Dependency directories (remove the comment below to include it)
 vendor/
 
-# Go module cache
-go.sum
-
 # Downloaded Go modules (accidentally placed in project root)
-supervisor/
-tablewriter/
+/supervisor/
+/tablewriter/
 
 # IDE and editor files
 .vscode/

@@ -2,83 +2,115 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"strings"
 
 	"github.com/x1t/sv/pkg/supervisor"
 )
 
-// CLIApp 负责整个CLI应用的运行逻辑
+// CLIApp 负责整个 CLI 应用的运行逻辑。
 type CLIApp struct {
 	renderer *CLIRenderer
 }
 
-// NewCLIApp 创建新的CLI应用
+// NewCLIApp 创建使用系统标准流的 CLI 应用。
 func NewCLIApp() *CLIApp {
-	return &CLIApp{
-		renderer: NewCLIRenderer(),
-	}
+	return NewCLIAppWithWriters(os.Stdout, os.Stderr)
 }
 
-// Run 程序运行逻辑
+// NewCLIAppWithWriters 创建可注入输出流的 CLI 应用，便于集成和测试。
+func NewCLIAppWithWriters(out, errOut io.Writer) *CLIApp {
+	return &CLIApp{renderer: NewCLIRenderer(out, errOut)}
+}
+
+// Run 使用 os.Args 执行 CLI。
 func (app *CLIApp) Run() error {
-	if len(os.Args) < 2 {
+	return app.RunArgs(os.Args[1:])
+}
+
+// RunArgs 执行传入的命令参数。
+func (app *CLIApp) RunArgs(args []string) error {
+	if app == nil || app.renderer == nil {
+		return fmt.Errorf("CLI应用未初始化")
+	}
+	if len(args) == 0 {
 		app.renderer.PrintUsage()
 		return nil
 	}
 
-	command := os.Args[1]
-	args := os.Args[2:]
-
-	// 检查是否是service子命令
-	if command == "service" {
-		sm := supervisor.NewServiceManager()
-		sm.HandleServiceCommand(args)
-		return nil
-	}
-
-	// 对于与Supervisor交互的命令，检测并开启RPC功能
-	if command == "status" || command == "list" || command == "start" || command == "stop" || command == "restart" {
-		// 尝试检测并开启RPC功能
-		cd := supervisor.NewConfigDetector()
-		err := cd.DetectAndEnableRPC()
-		if err != nil {
-			fmt.Printf("⚠️  检测/开启RPC功能时出错: %v\n", err)
-			// 继续执行，因为可能RPC已在其他地方配置，或者会回退到命令行模式
-		}
-	}
-
-	// 读取Supervisor连接配置
-	cd := supervisor.NewConfigDetector()
-	host, username, password := cd.ReadSupervisorConfig()
-
-	// 创建Supervisor客户端
-	client := supervisor.NewRPCClient(host, username, password)
-
+	command := strings.ToLower(strings.TrimSpace(args[0]))
+	commandArgs := args[1:]
 	switch command {
-	case "status", "list":
-		app.renderer.ShowStatus(client)
-	case "start", "stop", "restart":
-		if len(args) == 0 {
-			fmt.Printf("用法: sv %s <进程序号|进程名称|范围>\n", command)
-			fmt.Println("示例:")
-			fmt.Printf("  sv %s 1        # 控制序号为1的进程\n", command)
-			fmt.Printf("  sv %s myapp    # 控制名为myapp的进程\n", command)
-			fmt.Printf("  sv %s 1 3 5   # 控制多个进程\n", command)
-			fmt.Printf("  sv %s 1-5     # 控制序号1到5的进程\n", command)
-			return fmt.Errorf("参数不足")
-		}
-		app.renderer.ControlProcesses(client, command, args)
-	case "daemon":
-		// 守护进程模式，由系统服务管理器调用
-		sm := supervisor.NewServiceManager()
-		sm.RunServiceDaemon()
 	case "help", "-h", "--help":
 		app.renderer.PrintUsage()
+		return nil
+	case "service":
+		return supervisor.NewServiceManager().HandleServiceCommand(commandArgs)
+	case "configure":
+		return app.configure(commandArgs)
+	case "daemon":
+		if len(commandArgs) != 0 {
+			return fmt.Errorf("daemon不接受额外参数")
+		}
+		return supervisor.NewServiceManager().RunServiceDaemon()
+	case "status", "list", "ls":
+		if len(commandArgs) != 0 {
+			return fmt.Errorf("%s不接受额外参数", command)
+		}
+		return app.renderer.ShowStatus(app.newSupervisorClient())
+	case "start", "stop", "restart":
+		if len(commandArgs) == 0 {
+			return fmt.Errorf("用法: sv %s <进程序号|进程名称|范围>", command)
+		}
+		return app.renderer.ControlProcesses(app.newSupervisorClient(), command, commandArgs)
 	default:
-		fmt.Printf("未知命令: %s\n\n", command)
 		app.renderer.PrintUsage()
 		return fmt.Errorf("未知命令: %s", command)
 	}
+}
 
+func (app *CLIApp) newSupervisorClient() *supervisor.RPCClient {
+	detector := supervisor.NewConfigDetector()
+	host, username, password := detector.ReadSupervisorConfig()
+	return supervisor.NewRPCClient(host, username, password)
+}
+
+func (app *CLIApp) configure(args []string) error {
+	if len(args) == 0 || strings.ToLower(args[0]) != "rpc" {
+		return fmt.Errorf("用法: sv configure rpc [--dry-run] [--restart]")
+	}
+
+	dryRun := false
+	restart := false
+	for _, argument := range args[1:] {
+		switch argument {
+		case "--dry-run":
+			dryRun = true
+		case "--restart":
+			restart = true
+		default:
+			return fmt.Errorf("未知配置参数: %s", argument)
+		}
+	}
+	if dryRun && restart {
+		return fmt.Errorf("--dry-run不能与--restart同时使用")
+	}
+
+	detector := supervisor.NewConfigDetector()
+	message, err := detector.ConfigureRPC(dryRun)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(app.renderer.out, message); err != nil {
+		return err
+	}
+	if restart {
+		if err := detector.RestartSupervisor(); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintln(app.renderer.out, "Supervisor 已重启，RPC 配置已生效")
+		return err
+	}
 	return nil
 }

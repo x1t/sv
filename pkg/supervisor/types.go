@@ -1,26 +1,39 @@
 package supervisor
 
-import "encoding/xml"
+import (
+	"encoding/xml"
+	"fmt"
+	"strings"
+)
 
-// XML-RPC数据结构
+// MethodCall describes an XML-RPC request.
 type MethodCall struct {
-	XMLName    xml.Name   `xml:"methodCall"`
-	MethodName string     `xml:"methodName"`
-	Params     []Param    `xml:"params>param"`
+	XMLName    xml.Name `xml:"methodCall"`
+	MethodName string   `xml:"methodName"`
+	Params     []Param  `xml:"params>param"`
 }
 
+// Param wraps one XML-RPC value.
 type Param struct {
 	Value Value `xml:"value"`
 }
 
+// Value represents the XML-RPC scalar and composite types used by Supervisor.
+// Pointers are intentional: XML-RPC must distinguish false, zero and empty
+// string from a missing value.
 type Value struct {
-	String  string      `xml:"string,omitempty"`
-	Int     int         `xml:"int,omitempty"`
-	Boolean bool        `xml:"boolean,omitempty"`
-	Array   ArrayValues `xml:"array,omitempty"`
+	String  *string       `xml:"string"`
+	Int     *int64        `xml:"int"`
+	I4      *int64        `xml:"i4"`
+	I8      *int64        `xml:"i8"`
+	Boolean *RPCBoolean   `xml:"boolean"`
+	Double  *float64      `xml:"double"`
+	Array   *ArrayValues  `xml:"array"`
+	Struct  *StructValues `xml:"struct"`
+	Nil     *struct{}     `xml:"nil"`
 }
 
-// ArrayValues 用于处理数组值
+// ArrayValues represents an XML-RPC array.
 type ArrayValues struct {
 	Data ArrayData `xml:"data"`
 }
@@ -29,6 +42,37 @@ type ArrayData struct {
 	Values []Value `xml:"value"`
 }
 
+// StructValues represents an XML-RPC struct.
+type StructValues struct {
+	Members []StructMember `xml:"member"`
+}
+
+type StructMember struct {
+	Name  string `xml:"name"`
+	Value Value  `xml:"value"`
+}
+
+// RPCBoolean accepts both XML-RPC's 0/1 representation and true/false.
+type RPCBoolean bool
+
+func (b *RPCBoolean) UnmarshalXML(decoder *xml.Decoder, start xml.StartElement) error {
+	var raw string
+	if err := decoder.DecodeElement(&raw, &start); err != nil {
+		return err
+	}
+
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true":
+		*b = true
+	case "0", "false":
+		*b = false
+	default:
+		return fmt.Errorf("无效的XML-RPC布尔值: %q", raw)
+	}
+	return nil
+}
+
+// MethodResponse describes an XML-RPC response from Supervisor.
 type MethodResponse struct {
 	XMLName xml.Name `xml:"methodResponse"`
 	Params  []Param  `xml:"params>param"`
@@ -36,62 +80,23 @@ type MethodResponse struct {
 }
 
 type Fault struct {
-	Value struct {
-		Struct struct {
-			Member []struct {
-				Name  string `xml:"name"`
-				Value Value  `xml:"value"`
-			} `xml:"member"`
-		} `xml:"struct"`
-	} `xml:"value"`
+	Value Value `xml:"value"`
 }
 
-// EnhancedValue 用于更好地表示XML-RPC响应值
-type EnhancedValue struct {
-	XMLName xml.Name    `xml:"value"`
-	String  string      `xml:"string"`
-	Int     int         `xml:"int"`
-	Boolean bool        `xml:"boolean"`
-	Double  float64     `xml:"double"`
-	Array   EnhancedArray `xml:"array"`
-	Struct  EnhancedStruct `xml:"struct"`
-}
-
-// EnhancedArray 表示XML-RPC数组
-type EnhancedArray struct {
-	Data EnhancedData `xml:"data"`
-}
-
-// EnhancedData 包含数组的数据
-type EnhancedData struct {
-	Values []EnhancedValue `xml:"value"`
-}
-
-// EnhancedStruct 表示XML-RPC结构体
-type EnhancedStruct struct {
-	Members []EnhancedMember `xml:"member"`
-}
-
-// EnhancedMember 表示结构体成员
-type EnhancedMember struct {
-	Name  string        `xml:"name"`
-	Value EnhancedValue `xml:"value"`
-}
-
-// ProcessInfoRPC 定义从RPC获取的进程信息结构
+// ProcessInfoRPC contains the fields returned by supervisor.getAllProcessInfo.
 type ProcessInfoRPC struct {
-	Name        string  `xml:"name"`
-	Group       string  `xml:"group"`
-	Start       float64 `xml:"start"`
-	Stop        float64 `xml:"stop"`
-	Now         float64 `xml:"now"`
-	State       int     `xml:"state"`
-	StateName   string  `xml:"statename"`
-	SpawnErr    string  `xml:"spawnerr"`
-	ExitStatus  int     `xml:"exitstatus"`
-	Logfile     string  `xml:"logfile"`
-	StdoutLogfile string `xml:"stdout_logfile"`
-	StderrLogfile string `xml:"stderr_logfile"`
-	Pid         int     `xml:"pid"`
-	Description string  `xml:"description"`
+	Name          string  `xml:"name"`
+	Group         string  `xml:"group"`
+	Start         float64 `xml:"start"`
+	Stop          float64 `xml:"stop"`
+	Now           float64 `xml:"now"`
+	State         int     `xml:"state"`
+	StateName     string  `xml:"statename"`
+	SpawnErr      string  `xml:"spawnerr"`
+	ExitStatus    int     `xml:"exitstatus"`
+	Logfile       string  `xml:"logfile"`
+	StdoutLogfile string  `xml:"stdout_logfile"`
+	StderrLogfile string  `xml:"stderr_logfile"`
+	PID           int     `xml:"pid"`
+	Description   string  `xml:"description"`
 }
