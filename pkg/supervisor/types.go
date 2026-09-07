@@ -72,6 +72,16 @@ func (b *RPCBoolean) UnmarshalXML(decoder *xml.Decoder, start xml.StartElement) 
 	return nil
 }
 
+// MarshalXML 按 XML-RPC 规范输出 1/0。Supervisor 的布尔解析器只认 0/1,
+// 若用 encoding/xml 默认的 true/false 文本会被当作假值,导致 wait 参数失效。
+func (b RPCBoolean) MarshalXML(encoder *xml.Encoder, start xml.StartElement) error {
+	digit := "0"
+	if b {
+		digit = "1"
+	}
+	return encoder.EncodeElement(digit, start)
+}
+
 // MethodResponse describes an XML-RPC response from Supervisor.
 type MethodResponse struct {
 	XMLName xml.Name `xml:"methodResponse"`

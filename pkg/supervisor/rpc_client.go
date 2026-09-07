@@ -9,8 +9,10 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,17 +23,26 @@ const (
 	DefaultSupervisorHost = "http://localhost:9001/RPC2"
 	defaultHTTPTimeout    = 10 * time.Second
 	defaultCommandTimeout = 10 * time.Second
+	// defaultControlTimeout 是 start/stop/restart 等同步控制操作的超时。这类调用会
+	// 一直阻塞到 supervisor 处理完优雅停止(stopwaitsecs)与启动判定(startsecs),
+	// 慢服务常超过 10s,故单独给更长默认值,可用 SUPERVISOR_TIMEOUT 覆盖。
+	defaultControlTimeout = 120 * time.Second
 	maxRPCResponseSize    = 16 << 20
 )
 
+// ControlTimeoutEnv 是覆盖同步控制操作超时的环境变量名,取值单位秒。
+const ControlTimeoutEnv = "SUPERVISOR_TIMEOUT"
+
 // RPCClient is a client for Supervisor's XML-RPC endpoint.
 type RPCClient struct {
-	host           string
-	username       string
-	password       string
-	client         *http.Client
-	commandPath    string
-	commandTimeout time.Duration
+	host             string
+	username         string
+	password         string
+	client           *http.Client // 查询用,默认 defaultHTTPTimeout
+	opClient         *http.Client // 控制操作用,默认 defaultControlTimeout
+	commandPath      string
+	commandTimeout   time.Duration // 查询命令回退超时
+	opCommandTimeout time.Duration // 控制命令回退超时
 }
 
 // NewRPCClient creates a Supervisor client. An empty host uses the local
@@ -40,19 +51,45 @@ func NewRPCClient(host, username, password string) *RPCClient {
 	if strings.TrimSpace(host) == "" {
 		host = DefaultSupervisorHost
 	}
+	controlTimeout := resolveControlTimeout()
 
 	return &RPCClient{
-		host:           host,
-		username:       username,
-		password:       password,
-		client:         &http.Client{Timeout: defaultHTTPTimeout, CheckRedirect: refuseRedirects},
-		commandPath:    "supervisorctl",
-		commandTimeout: defaultCommandTimeout,
+		host:             host,
+		username:         username,
+		password:         password,
+		client:           &http.Client{Timeout: defaultHTTPTimeout, CheckRedirect: refuseRedirects},
+		opClient:         &http.Client{Timeout: controlTimeout, CheckRedirect: refuseRedirects},
+		commandPath:      "supervisorctl",
+		commandTimeout:   defaultCommandTimeout,
+		opCommandTimeout: controlTimeout,
 	}
+}
+
+// resolveControlTimeout 解析 SUPERVISOR_TIMEOUT(单位秒)作为同步控制操作的超时;
+// 缺省、非法或小于 1 时回退到 defaultControlTimeout。
+func resolveControlTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv(ControlTimeoutEnv))
+	if raw == "" {
+		return defaultControlTimeout
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds < 1 {
+		return defaultControlTimeout
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func refuseRedirects(_ *http.Request, _ []*http.Request) error {
 	return http.ErrUseLastResponse
+}
+
+// controlClient 返回控制专用连接;对直接以结构体字面量构造、未初始化 opClient 的
+// 场景做兜底,避免 nil 解引用。
+func (rc *RPCClient) controlClient() *http.Client {
+	if rc.opClient != nil {
+		return rc.opClient
+	}
+	return &http.Client{Timeout: resolveControlTimeout(), CheckRedirect: refuseRedirects}
 }
 
 // call invokes one XML-RPC method. It is kept as a small wrapper so callers
@@ -61,7 +98,18 @@ func (rc *RPCClient) call(method string, params []interface{}) (interface{}, err
 	return rc.callContext(context.Background(), method, params)
 }
 
+// callContext 用于只读查询,使用默认(10s)连接。
 func (rc *RPCClient) callContext(ctx context.Context, method string, params []interface{}) (interface{}, error) {
+	return rc.callContextWithClient(ctx, rc.client, method, params)
+}
+
+// callControlContext 用于 start/stop/restart 等同步控制操作,使用控制专用的长超时
+// 连接,避免慢启动/慢停止服务在默认 10s 内被误判为失败。
+func (rc *RPCClient) callControlContext(ctx context.Context, method string, params []interface{}) (interface{}, error) {
+	return rc.callContextWithClient(ctx, rc.controlClient(), method, params)
+}
+
+func (rc *RPCClient) callContextWithClient(ctx context.Context, client *http.Client, method string, params []interface{}) (interface{}, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -97,7 +145,6 @@ func (rc *RPCClient) callContext(ctx context.Context, method string, params []in
 		req.SetBasicAuth(rc.username, rc.password)
 	}
 
-	client := rc.client
 	if client == nil {
 		client = &http.Client{Timeout: defaultHTTPTimeout, CheckRedirect: refuseRedirects}
 	}
@@ -486,13 +533,22 @@ func (rc *RPCClient) getAllProcessesViaCommand(ctx context.Context) ([]utils.Pro
 	return processes, nil
 }
 
+// runSupervisorctl 用于只读查询(status),使用查询命令超时。
 func (rc *RPCClient) runSupervisorctl(ctx context.Context, args ...string) ([]byte, error) {
+	return rc.runSupervisorctlWith(ctx, rc.commandTimeout, defaultCommandTimeout, args...)
+}
+
+// runSupervisorctlControl 用于 start/stop/restart 命令回退,使用控制超时。
+func (rc *RPCClient) runSupervisorctlControl(ctx context.Context, args ...string) ([]byte, error) {
+	return rc.runSupervisorctlWith(ctx, rc.opCommandTimeout, defaultControlTimeout, args...)
+}
+
+func (rc *RPCClient) runSupervisorctlWith(ctx context.Context, timeout, fallback time.Duration, args ...string) ([]byte, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	timeout := rc.commandTimeout
 	if timeout <= 0 {
-		timeout = defaultCommandTimeout
+		timeout = fallback
 	}
 	commandContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -518,7 +574,9 @@ func (rc *RPCClient) ControlProcess(action, processName string) error {
 
 	ctx := context.Background()
 	if action == "restart" {
-		if err := rc.controlProcessRPC(ctx, "supervisor.stopProcess", processName); err != nil {
+		// 目标本来就未在运行(含已停止/FATAL)时,stop 会报 NOT_RUNNING:跳过停止
+		// 阶段直接启动,与 supervisorctl restart 的语义保持一致。
+		if err := rc.controlProcessRPC(ctx, "supervisor.stopProcess", processName); err != nil && !isNotRunningError(err) {
 			if rc.canUseCommandFallback() {
 				return rc.controlProcessViaCommand(ctx, action, processName)
 			}
@@ -539,8 +597,13 @@ func (rc *RPCClient) ControlProcess(action, processName string) error {
 	return rc.controlProcessViaCommand(ctx, action, processName)
 }
 
+// isNotRunningError 判断错误是否为 supervisor 的 NOT_RUNNING(目标本来未在运行)。
+func isNotRunningError(err error) bool {
+	return err != nil && strings.Contains(strings.ToUpper(err.Error()), "NOT_RUNNING")
+}
+
 func (rc *RPCClient) controlProcessRPC(ctx context.Context, method, processName string) error {
-	result, err := rc.callContext(ctx, method, []interface{}{processName, true})
+	result, err := rc.callControlContext(ctx, method, []interface{}{processName, true})
 	if err != nil {
 		return err
 	}
@@ -551,7 +614,7 @@ func (rc *RPCClient) controlProcessRPC(ctx context.Context, method, processName 
 }
 
 func (rc *RPCClient) controlProcessViaCommand(ctx context.Context, action, processName string) error {
-	output, err := rc.runSupervisorctl(ctx, action, processName)
+	output, err := rc.runSupervisorctlControl(ctx, action, processName)
 	if err != nil {
 		return fmt.Errorf("%s进程失败: %w, 输出: %s", action, err, strings.TrimSpace(string(output)))
 	}

@@ -147,6 +147,10 @@ export SUPERVISOR_HOST="http://localhost:9001/RPC2"
 # 如果需要认证
 export SUPERVISOR_USER="your_username"
 export SUPERVISOR_PASSWORD="your_password"
+
+# 同步控制操作超时（秒，可选）：start/stop/restart 默认 120s，
+# 慢启动/慢停止服务可据此调大（查询 status 仍为 10s，不受影响）
+# export SUPERVISOR_TIMEOUT="300"
 ```
 
 ### 配置示例
