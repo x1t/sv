@@ -3,7 +3,6 @@ module github.com/x1t/sv
 go 1.26.0
 
 require (
-	github.com/kardianos/service v1.3.0
 	github.com/olekukonko/tablewriter v1.1.4
 	github.com/stretchr/testify v1.12.1
 )
