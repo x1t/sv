@@ -99,3 +99,44 @@ jobs:
             dist/${{ matrix.binary }}.sha256
           if-no-files-found: error
           retention-days: 14
+
+  release:
+    name: Release ${{ github.ref_name }}
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: sv-linux-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Prepare binary assets
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp release-assets/sv-linux-amd64 dist/sv-linux-amd64
+          cp release-assets/sv-linux-arm64 dist/sv-linux-arm64
+          chmod 0755 dist/sv-linux-amd64 dist/sv-linux-arm64
+          file dist/sv-linux-amd64 dist/sv-linux-arm64
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 2
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$RELEASE_TAG" \
+            --notes "Static Linux binaries for OpenWrt-compatible amd64 and arm64 targets." \
+            --latest \
+            --verify-tag \
+            dist/sv-linux-amd64 \
+            dist/sv-linux-arm64
