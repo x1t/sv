@@ -1,0 +1,98 @@
+name: Build OpenWrt binaries
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.26.8"
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Run tests
+        run: go test -mod=readonly ./...
+
+      - name: Run vet
+        run: go vet ./...
+
+  build:
+    name: Build linux/${{ matrix.goarch }}
+    needs: test
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goarch: amd64
+            binary: sv-linux-amd64
+          - goarch: arm64
+            binary: sv-linux-arm64
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Build static binary
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          go build \
+            -trimpath \
+            -tags "netgo osusergo" \
+            -ldflags "-s -w" \
+            -o "dist/${{ matrix.binary }}" \
+            .
+          file "dist/${{ matrix.binary }}"
+          file "dist/${{ matrix.binary }}" | grep -F "statically linked"
+          sha256sum "dist/${{ matrix.binary }}" > "dist/${{ matrix.binary }}.sha256"
+          tar -C dist -czf "dist/${{ matrix.binary }}.tar.gz" "${{ matrix.binary }}"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.binary }}
+          path: |
+            dist/${{ matrix.binary }}
+            dist/${{ matrix.binary }}.tar.gz
+            dist/${{ matrix.binary }}.sha256
+          if-no-files-found: error
+          retention-days: 14
