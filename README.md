@@ -76,25 +76,22 @@ GOOS=darwin GOARCH=amd64 go build -o sv-darwin-amd64 main.go
 
 ### 从 GitHub Release 安装
 
-下面的命令会根据当前 Linux 架构下载最新 Release，并将本地二进制安装为 `sv`：
+安装脚本自动识别 Linux amd64/arm64，从 `x1t/sv` 下载最新正式 Release，
+将二进制安装为 `/usr/local/bin/sv`。两个版本使用相同安装路径，请选择其中一个。
 
-```bash
-set -eu
-arch="$(case "$(uname -m)" in
-  x86_64|amd64) printf '%s' amd64 ;;
-  aarch64|arm64) printf '%s' arm64 ;;
-  *) printf '不支持的架构: %s\n' "$(uname -m)" >&2; exit 1 ;;
-esac)"
-tmp="$(mktemp)"
-trap 'rm -f "$tmp"' 0
-curl -fsSL --retry 3 --connect-timeout 10 --max-time 300 \
-  "https://github.com/x1t/sv/releases/latest/download/sv-linux-${arch}" -o "$tmp"
-if [ "$(id -u)" -eq 0 ]; then
-  install -m 0755 "$tmp" /usr/local/bin/sv
-else
-  sudo install -m 0755 "$tmp" /usr/local/bin/sv
-fi
+```sh
+curl -fsSL https://raw.githubusercontent.com/x1t/sv/refs/heads/main/install.sh | sh
 ```
+
+指定已发布版本或安装目录：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/x1t/sv/refs/heads/main/install.sh | sh -s -- --version v0.3.0 --install-dir /usr/bin
+```
+
+脚本支持 `curl` / `wget` 下载以及 `SV_VERSION`、`SV_INSTALL_DIR` 环境变量。
+安装目录须已存在；没有写权限时会尝试 `sudo`，OpenWrt 可直接以 root 执行。
+安装只复制二进制，不会启动 Supervisor；安装后使用 `sv --help`。
 
 ### 基本使用
 
