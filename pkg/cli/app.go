@@ -45,15 +45,13 @@ func (app *CLIApp) RunArgs(args []string) error {
 	case "help", "-h", "--help":
 		app.renderer.PrintUsage()
 		return nil
-	case "service":
-		return supervisor.NewServiceManager().HandleServiceCommand(commandArgs)
+	case "init":
+		if len(commandArgs) != 0 {
+			return fmt.Errorf("init不接受额外参数")
+		}
+		return app.initSupervisor()
 	case "configure":
 		return app.configure(commandArgs)
-	case "daemon":
-		if len(commandArgs) != 0 {
-			return fmt.Errorf("daemon不接受额外参数")
-		}
-		return supervisor.NewServiceManager().RunServiceDaemon()
 	case "status", "list", "ls":
 		if len(commandArgs) != 0 {
 			return fmt.Errorf("%s不接受额外参数", command)
@@ -68,6 +66,21 @@ func (app *CLIApp) RunArgs(args []string) error {
 		app.renderer.PrintUsage()
 		return fmt.Errorf("未知命令: %s", command)
 	}
+}
+
+// initSupervisor 一次性准备并启动 Supervisor 的 RPC 服务。
+// sv 本身不常驻,真正的后台进程始终是 supervisord。
+func (app *CLIApp) initSupervisor() error {
+	detector := supervisor.NewConfigDetector()
+	message, err := detector.InitializeSupervisor()
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(app.renderer.out, message); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(app.renderer.out, "✅ Supervisor RPC 初始化成功")
+	return err
 }
 
 func (app *CLIApp) newSupervisorClient() *supervisor.RPCClient {

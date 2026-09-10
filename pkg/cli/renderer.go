@@ -108,25 +108,16 @@ func (cr *CLIRenderer) PrintUsage() {
   sv start <进程>              # 启动进程
   sv stop <进程>               # 停止进程
   sv restart <进程>            # 重启进程
+  sv init                      # 初始化并启动 Supervisor RPC
   sv configure rpc             # 检查并补齐 RPC 配置
   sv configure rpc --dry-run   # 只预览配置变更
   sv configure rpc --restart   # 配置后显式重启 Supervisor
-  sv service <action>          # 服务管理
-  sv daemon                    # 运行服务守护进程
 
 进程参数支持:
   序号      sv restart 1
   名称      sv restart myapp
   多个      sv restart 1 3 5
   范围      sv restart 1-5
-
-服务操作:
-  install   安装 sv 为系统服务
-  uninstall 卸载 sv 系统服务
-  start     启动 sv 系统服务
-  stop      停止 sv 系统服务
-  restart   重启 sv 系统服务
-  status    查看 sv 服务状态
 
 环境变量:
   SUPERVISOR_HOST              # Supervisor RPC 地址（默认: http://localhost:9001/RPC2）

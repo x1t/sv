@@ -14,9 +14,23 @@ func TestCLIHelpIncludesListAliases(t *testing.T) {
 	app := cli.NewCLIAppWithWriters(&output, &output)
 
 	require.NoError(t, app.RunArgs([]string{"help"}))
-	for _, expected := range []string{"sv list", "sv ls", "sv configure rpc"} {
+	for _, expected := range []string{"sv list", "sv ls", "sv init", "sv configure rpc"} {
 		assert.Contains(t, output.String(), expected)
 	}
+}
+
+func TestCLIRejectsRemovedServiceCommands(t *testing.T) {
+	var output bytes.Buffer
+	err := cli.NewCLIAppWithWriters(&output, &output).RunArgs([]string{"service", "install"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "未知命令")
+}
+
+func TestCLIInitRejectsArgumentsBeforeSystemAccess(t *testing.T) {
+	var output bytes.Buffer
+	err := cli.NewCLIAppWithWriters(&output, &output).RunArgs([]string{"init", "unexpected"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "init不接受额外参数")
 }
 
 func TestCLINoArgumentsPrintsUsage(t *testing.T) {

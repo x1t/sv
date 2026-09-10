@@ -98,6 +98,19 @@ func (cd *ConfigDetector) ConfigureRPC(dryRun bool) (string, error) {
 	return fmt.Sprintf("配置已更新: %s；备份: %s；请使用 --restart 或手动重启 Supervisor", configPath, backupPath), nil
 }
 
+// InitializeSupervisor 一次性补齐 RPC 配置并重启已有的 Supervisor 服务。
+// 它只管理 supervisord,不会创建或运行 sv 自身的后台服务。
+func (cd *ConfigDetector) InitializeSupervisor() (string, error) {
+	message, err := cd.ConfigureRPC(false)
+	if err != nil {
+		return "", err
+	}
+	if err := cd.RestartSupervisor(); err != nil {
+		return "", fmt.Errorf("初始化 Supervisor RPC 失败: %w", err)
+	}
+	return message, nil
+}
+
 // RestartSupervisor 显式尝试重启 Supervisor 服务。
 func (cd *ConfigDetector) RestartSupervisor() error {
 	commands := [][]string{
