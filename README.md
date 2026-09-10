@@ -1,6 +1,6 @@
 # sv - Supervisor进程管理工具 🚀
 
-一个基于Go语言开发的现代化Supervisor进程管理工具，采用模块化架构设计，支持序号操作、智能配置检测和系统服务管理，让进程管理更加便捷！
+一个基于Go语言开发的现代化Supervisor进程管理工具，采用模块化架构设计，支持序号操作和智能RPC配置，让进程管理更加便捷！
 
 ## ✨ 核心特性
 
@@ -9,7 +9,7 @@
 - 🔧 **灵活进程控制** - 支持单个、多个、范围、混合操作格式
 - 🌐 **远程服务器管理** - 支持认证远程Supervisor服务器
 - 🛠️ **智能配置检测** - 自动检测和配置Supervisor RPC功能
-- 🔧 **系统服务集成** - 支持将工具自身安装为系统服务，自动创建符号链接
+- 🚀 **短生命周期控制** - 工具只通过RPC控制Supervisor，不作为后台服务运行
 - 💡 **智能错误处理** - 友好的中文错误提示和解决建议
 - 🔄 **双模式架构** - RPC优先，命令行模式自动回退，确保兼容性
 - ⚡ **极致性能** - Go语言开发，单二进制文件，超快启动速度
@@ -29,7 +29,6 @@ sv/
 │   ├── supervisor/            # Supervisor核心功能
 │   │   ├── rpc_client.go     # XML-RPC客户端
 │   │   ├── config_detector.go # 配置检测器
-│   │   ├── service_manager.go # 系统服务管理
 │   │   ├── process_control.go # 进程控制
 │   │   └── types.go          # 数据结构定义
 │   └── utils/                 # 工具函数
@@ -44,7 +43,7 @@ sv/
 - **CLI应用层**: 负责命令解析、参数验证和用户交互
 - **业务逻辑层**: Supervisor通信、进程管理、配置检测
 - **工具函数层**: 通用工具、数据结构、显示格式化
-- **系统服务层**: 跨平台服务管理和守护进程
+- **初始化层**: 检测配置并启动已有的Supervisor服务
 
 ## 🚀 快速开始
 
@@ -75,6 +74,28 @@ GOOS=windows GOARCH=amd64 go build -o sv-windows-amd64.exe main.go
 GOOS=darwin GOARCH=amd64 go build -o sv-darwin-amd64 main.go
 ```
 
+### 从 GitHub Release 安装
+
+下面的命令会根据当前 Linux 架构下载最新 Release，并将本地二进制安装为 `sv`：
+
+```bash
+set -eu
+arch="$(case "$(uname -m)" in
+  x86_64|amd64) printf '%s' amd64 ;;
+  aarch64|arm64) printf '%s' arm64 ;;
+  *) printf '不支持的架构: %s\n' "$(uname -m)" >&2; exit 1 ;;
+esac)"
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' 0
+curl -fsSL --retry 3 --connect-timeout 10 --max-time 300 \
+  "https://github.com/x1t/sv/releases/latest/download/sv-linux-${arch}" -o "$tmp"
+if [ "$(id -u)" -eq 0 ]; then
+  install -m 0755 "$tmp" /usr/local/bin/sv
+else
+  sudo install -m 0755 "$tmp" /usr/local/bin/sv
+fi
+```
+
 ### 基本使用
 
 ```bash
@@ -97,8 +118,8 @@ GOOS=darwin GOARCH=amd64 go build -o sv-darwin-amd64 main.go
 # 混合使用各种格式
 ./sv restart 1 nginx 3-5
 
-# 安装为系统服务（自动创建符号链接）
-sudo ./sv service install
+# 初始化Supervisor RPC并启动已有的Supervisor服务
+sudo ./sv init
 ```
 
 ## 📋 命令参考
@@ -112,19 +133,8 @@ sudo ./sv service install
 | `start` | 启动指定进程 | `./sv start 1` |
 | `stop` | 停止指定进程 | `./sv stop 1-3` |
 | `restart` | 重启指定进程 | `./sv restart nginx` |
-| `service` | 系统服务管理 | `./sv service install` |
+| `init` | 初始化并启动Supervisor RPC | `./sv init` |
 | `help` | 显示帮助信息 | `./sv help` |
-
-### 系统服务命令
-
-| 子命令 | 描述 | 示例 |
-|--------|------|------|
-| `install` | 安装为系统服务 | `./sv service install` |
-| `uninstall` | 卸载系统服务 | `./sv service uninstall` |
-| `start` | 启动系统服务 | `./sv service start` |
-| `stop` | 停止系统服务 | `./sv service stop` |
-| `restart` | 重启系统服务 | `./sv service restart` |
-| `status` | 查看服务状态 | `./sv service status` |
 
 ### 进程参数格式
 
@@ -156,7 +166,8 @@ export SUPERVISOR_PASSWORD="your_password"
 ### 配置示例
 
 ```bash
-# 本地默认配置（会自动检测和配置RPC功能）
+# 本地默认配置（先初始化RPC）
+sudo ./sv init
 ./sv status
 
 # 远程服务器配置
@@ -171,11 +182,11 @@ SUPERVISOR_PASSWORD="secret123" \
 
 ### 智能配置检测
 
-工具会自动检测Supervisor配置：
-- **自动检测**: 扫描现有Supervisor配置文件
-- **缺失配置**: 自动添加必要的RPC和HTTP服务器配置
-- **配置验证**: 验证配置正确性和可用性
-- **优雅降级**: 配置失败时自动回退到命令行模式
+工具通过显式命令管理Supervisor配置：
+- **初始化**: `sv init` 扫描现有配置并补齐必要的RPC和HTTP服务器配置，然后重启已有的Supervisor服务
+- **预览变更**: `sv configure rpc --dry-run` 只显示待补齐的配置，不修改文件
+- **显式配置**: `sv configure rpc` 只修改配置，`--restart` 时才重启已有的Supervisor服务
+- **连接回退**: 本地RPC不可用时，进程查询和控制可回退到`supervisorctl`
 
 ### 必需的Supervisor配置
 
@@ -190,38 +201,16 @@ password=pass
 [rpcinterface:supervisor]
 supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
 
-[supervisord]
-rpcinterface_files = supervisord
 ```
 
-## 🔧 系统服务管理
-
-### 安装为系统服务
+## 🔧 Supervisor初始化
 
 ```bash
-# 安装sv为系统服务
-./sv service install
+# 补齐RPC配置并重启已有的Supervisor服务
+sudo ./sv init
 
-# 启动服务
-./sv service start
-
-# 查看服务状态
-./sv service status
-
-# 停止服务
-./sv service stop
-
-# 卸载服务
-./sv service uninstall
+# sv本身不会常驻；Supervisor的服务由系统原有的init/procd/systemd管理
 ```
-
-### 守护进程模式
-
-系统服务模式下，sv会：
-- 后台持续运行
-- 提供进程监控和管理功能
-- 支持系统启动时自动运行
-- 跨平台兼容（Linux systemd、Windows service等）
 
 ## 📊 状态说明
 
@@ -326,25 +315,11 @@ SUPERVISOR_PASSWORD="secret123" \
 ./sv restart 1-5
 ```
 
-### 系统服务管理
+### Supervisor服务
 
 ```bash
-# 安装为系统服务，实现持久化运行
-sudo ./sv service install
-
-# 启用开机自启动
-sudo systemctl enable sv  # Linux
-# 或在Windows服务中设置为自动启动
-
-# 管理系统服务
-./sv service start
-./sv service status
-./sv service stop
-./sv service restart
-
-# 卸载系统服务
-sudo ./sv service uninstall
-```
+# 初始化RPC并启动已有的Supervisor服务
+sudo ./sv init
 ```
 
 ## 🛠️ 开发
@@ -434,7 +409,6 @@ pkg/
 │   ├── rpc_client.go     # XML-RPC客户端（335行）
 │   ├── types.go          # 数据结构定义（96行）
 │   ├── config_detector.go # 配置检测和自动配置（299行）
-│   ├── service_manager.go # 系统服务管理（429行）
 │   └── process_control.go # 进程控制逻辑（119行）
 └── utils/                 # 工具函数
     └── common.go         # 通用工具函数和数据结构（499行）
@@ -450,7 +424,7 @@ pkg/
 2. 检查端口配置（默认9001）
 3. 确认防火墙设置
 4. 验证认证信息
-5. 工具会自动尝试配置RPC功能
+5. 首次使用或修改配置后执行`sudo ./sv init`
 
 ### 配置问题
 
@@ -480,23 +454,15 @@ password=pass
 [rpcinterface:supervisor]
 supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
 
-[supervisord]
-rpcinterface_files = supervisord
 ```
 
-### 系统服务问题
+### Supervisor启动问题
 
 ```bash
-# 查看服务状态
-./sv service status
+# 初始化配置并启动已有的Supervisor服务
+sudo ./sv init
 
-# 查看服务日志
-journalctl -u sv -f  # Linux
-# 或在Windows事件查看器中查看
-
-# 重新安装服务
-./sv service uninstall
-./sv service install
+# Linux/OpenWrt上请查看Supervisor自身的服务日志
 ```
 
 ## 🤝 贡献

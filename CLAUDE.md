@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 🎯 项目概述
 
-这是一个基于Go语言开发的现代化Supervisor进程管理工具，采用清晰的模块化架构。该工具通过序号化操作简化进程管理，支持智能配置检测、远程管理和系统服务集成。
+这是一个基于Go语言开发的现代化Supervisor进程管理工具，采用清晰的模块化架构。该工具通过序号化操作简化进程管理，支持智能配置检测和远程管理。sv自身是短生命周期CLI，不作为后台服务运行。
 
 ### 核心价值
 - **序号操作**: 使用数字序号代替长进程名，提升运维效率
@@ -36,7 +36,6 @@ func main() {
 #### 2. 业务逻辑层 (`pkg/supervisor/`)
 - **`rpc_client.go`**: XML-RPC客户端，支持认证、超时、错误处理
 - **`config_detector.go`**: 智能配置检测和自动配置Supervisor
-- **`service_manager.go`**: 系统服务管理，跨平台守护进程
 - **`process_control.go`**: 进程控制逻辑（启动/停止/重启）
 - **`types.go`**: XML-RPC数据结构定义
 - **核心职责**: Supervisor通信、进程管理、配置管理
@@ -204,9 +203,8 @@ rpcinterface_files = supervisord
 ## 🌟 依赖管理
 
 ### 直接依赖
-- `github.com/kardianos/service v1.2.4` - 系统服务管理
-- `github.com/olekukonko/tablewriter v1.1.2` - 表格渲染
-- `github.com/stretchr/testify v1.11.1` - 测试框架
+- `github.com/olekukonko/tablewriter` - 表格渲染
+- `github.com/stretchr/testify` - 测试框架
 
 ### 构建优化
 使用`-ldflags="-s -w"`标志减小二进制文件大小
